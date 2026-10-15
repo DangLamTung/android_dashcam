@@ -65,7 +65,7 @@ class SystemCameraController(
 
     private val busy = AtomicBoolean(false)
     private var lastInferAt = 0L
-    private val detectIntervalMs = 500L
+    private var detectIntervalMs = 500L
     private val framesInWindow = AtomicInteger(0)
 
     @Volatile
@@ -94,6 +94,7 @@ class SystemCameraController(
     fun open(facingBack: Boolean = true) {
         if (isOpen) close()
         isFacingBack = facingBack
+        detectIntervalMs = HudPrefs.detectIntervalMs(context).toLong().coerceAtLeast(0L)
         initDetector()
 
         try {
@@ -227,7 +228,8 @@ class SystemCameraController(
             // Object detection
             val det = detector
             val now = System.currentTimeMillis()
-            if (det != null && now - lastInferAt >= detectIntervalMs && busy.compareAndSet(false, true)) {
+            val isDue = (detectIntervalMs <= 0 || now - lastInferAt >= detectIntervalMs)
+            if (det != null && isDue && busy.compareAndSet(false, true)) {
                 lastInferAt = now
                 val copy = nv21Buffer.clone()
                 val w = frameW

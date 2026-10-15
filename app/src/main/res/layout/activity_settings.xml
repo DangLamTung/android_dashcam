@@ -307,6 +307,13 @@
                 android:layout_height="wrap_content"
                 android:text="@string/settings_rate_5"
                 android:textColor="@color/hud_text_primary" />
+
+            <RadioButton
+                android:id="@+id/rbRateFree"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_rate_free"
+                android:textColor="@color/hud_text_primary" />
         </RadioGroup>
 
         <TextView

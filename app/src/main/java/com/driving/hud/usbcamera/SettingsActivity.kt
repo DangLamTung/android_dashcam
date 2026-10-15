@@ -72,6 +72,7 @@ class SettingsActivity : AppCompatActivity() {
         val rbRate1 = findViewById<RadioButton>(R.id.rbRate1)
         val rbRate2 = findViewById<RadioButton>(R.id.rbRate2)
         val rbRate5 = findViewById<RadioButton>(R.id.rbRate5)
+        val rbRateFree = findViewById<RadioButton>(R.id.rbRateFree)
         val etCamHeight = findViewById<EditText>(R.id.etCamHeight)
         val etCamPitch = findViewById<EditText>(R.id.etCamPitch)
         val etCamFov = findViewById<EditText>(R.id.etCamFov)
@@ -122,6 +123,7 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         when (HudPrefs.detectIntervalMs(this)) {
+            0 -> rbRateFree.isChecked = true
             1000 -> rbRate1.isChecked = true
             200 -> rbRate5.isChecked = true
             else -> rbRate2.isChecked = true
@@ -188,6 +190,7 @@ class SettingsActivity : AppCompatActivity() {
             HudPrefs.setTargetFps(this, fps)
 
             val interval = when {
+                rbRateFree.isChecked -> 0
                 rbRate1.isChecked -> 1000
                 rbRate5.isChecked -> 200
                 else -> 500

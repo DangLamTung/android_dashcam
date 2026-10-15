@@ -67,10 +67,11 @@
     <string name="settings_save">Save &amp; Apply</string>
     <string name="settings_cancel">Cancel</string>
     <string name="settings_detect_rate">Detection rate</string>
-    <string name="settings_rate_1">1 per second — lightest</string>
-    <string name="settings_rate_2">2 per second — balanced</string>
-    <string name="settings_rate_5">5 per second — most responsive</string>
-    <string name="settings_detect_rate_hint">Inference is the single most expensive thing the app does on CPU. Boxes are redrawn at most this often; the video preview is unaffected.</string>
+    <string name="settings_rate_1">1 per second (1 FPS) — lightest</string>
+    <string name="settings_rate_2">2 per second (2 FPS) — balanced</string>
+    <string name="settings_rate_5">5 per second (5 FPS) — responsive</string>
+    <string name="settings_rate_free">Free Run (Max FPS / Uncapped) — lowest latency</string>
+    <string name="settings_detect_rate_hint">Inference runs as fast as the model can execute on incoming frames (Free Run), or throttled to save power.</string>
 
     <!-- Calibration Mode -->
     <string name="btn_calibration_mode">🎯 CALIBRATION MODE</string>

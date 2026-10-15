@@ -22,14 +22,35 @@ class BatteryTracker(private val context: Context) {
 
     companion object {
         private const val TAG = "BatteryTracker"
-        private const val ASSUMED_BATTERY_MAH = 4500f // Fallback baseline for early runtime estimate
+        private const val DEFAULT_BATTERY_MAH = 7000f // Modern fallback baseline (7,000 mAh)
     }
 
     private val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
+    private val batteryCapacityMah: Float = detectBatteryCapacityMah()
 
     private var sessionStartTimeMs: Long = SystemClock.elapsedRealtime()
     private var sessionStartLevel: Int = -1
     private var lastLoggedTimeMs: Long = 0L
+
+    // Exponential Moving Average (EMA) filter state for jitter-free Watt and mA display
+    private var smoothedCurrentMa: Float = 0f
+    private var smoothedPowerMw: Float = 0f
+    private var hasSmoothedSample = false
+
+    private fun detectBatteryCapacityMah(): Float {
+        try {
+            val powerProfileClass = Class.forName("com.android.internal.os.PowerProfile")
+            val powerProfile = powerProfileClass.getConstructor(Context::class.java).newInstance(context)
+            val cap = powerProfileClass.getMethod("getBatteryCapacity").invoke(powerProfile) as? Double
+            if (cap != null && cap > 1000.0) {
+                HudLogger.i(TAG, "Detected hardware battery capacity: ${cap.toFloat()} mAh")
+                return cap.toFloat()
+            }
+        } catch (t: Throwable) {
+            HudLogger.w(TAG, "PowerProfile lookup failed: ${t.message}; using ${DEFAULT_BATTERY_MAH.toInt()} mAh")
+        }
+        return DEFAULT_BATTERY_MAH
+    }
 
     data class BatterySnapshot(
         val levelPercent: Int,          // 0..100
@@ -134,9 +155,10 @@ class BatteryTracker(private val context: Context) {
     /** Reset session timer and start level (e.g. when entering HUD mode or user clicks reset). */
     fun resetSession() {
         sessionStartTimeMs = SystemClock.elapsedRealtime()
+        hasSmoothedSample = false
         val snap = sample()
         sessionStartLevel = snap.levelPercent
-        HudLogger.i(TAG, "Battery session reset at level ${sessionStartLevel}%")
+        HudLogger.i(TAG, "Battery session reset at level ${sessionStartLevel}% (capacity: ${batteryCapacityMah.toInt()}mAh)")
     }
 
     /**
@@ -187,6 +209,19 @@ class BatteryTracker(private val context: Context) {
             (abs(currentMa) * voltageMv) / 1000
         } else 0
 
+        // Apply EMA filter (alpha = 0.2 gives a smooth ~5-second low-pass response across 1 Hz ticks)
+        if (!hasSmoothedSample) {
+            smoothedCurrentMa = currentMa.toFloat()
+            smoothedPowerMw = powerMw.toFloat()
+            hasSmoothedSample = true
+        } else {
+            val alpha = 0.2f
+            smoothedCurrentMa = alpha * currentMa + (1f - alpha) * smoothedCurrentMa
+            smoothedPowerMw = alpha * powerMw + (1f - alpha) * smoothedPowerMw
+        }
+        val displayCurrentMa = smoothedCurrentMa.toInt()
+        val displayPowerMw = smoothedPowerMw.toInt()
+
         // Session metrics
         val nowMs = SystemClock.elapsedRealtime()
         val sessionElapsedSec = (nowMs - sessionStartTimeMs) / 1000
@@ -205,9 +240,9 @@ class BatteryTracker(private val context: Context) {
             if (sessionElapsedSec >= 45 && sessionDrainPercent > 0) {
                 // Measured session drain rate
                 drainPerHour = (sessionDrainPercent.toFloat() / sessionElapsedSec) * 3600f
-            } else if (abs(currentMa) > 50) {
-                // Instantaneous estimated drain rate based on mA draw
-                drainPerHour = (abs(currentMa).toFloat() / ASSUMED_BATTERY_MAH) * 100f
+            } else if (abs(smoothedCurrentMa) > 50f) {
+                // Smoothed estimated drain rate based on mA draw and battery capacity
+                drainPerHour = (abs(smoothedCurrentMa) / batteryCapacityMah) * 100f
             }
 
             if (drainPerHour > 0.2f) {
@@ -220,8 +255,8 @@ class BatteryTracker(private val context: Context) {
             isCharging = isCharging,
             pluggedSource = pluggedSource,
             voltageMv = voltageMv,
-            currentNowMa = currentMa,
-            powerMw = powerMw,
+            currentNowMa = displayCurrentMa,
+            powerMw = displayPowerMw,
             tempC = tempC,
             sessionElapsedSec = sessionElapsedSec,
             sessionStartLevel = startLevel,

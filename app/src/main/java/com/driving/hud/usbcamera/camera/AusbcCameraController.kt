@@ -441,7 +441,7 @@ class AusbcCameraController(
         val need = w * h * 3 / 2
         if (need <= 0) return@IFrameCallback
         val now = System.currentTimeMillis()
-        if (now - lastInferAt < detectIntervalMs) return@IFrameCallback
+        if (detectIntervalMs > 0 && now - lastInferAt < detectIntervalMs) return@IFrameCallback
         if (!busy.compareAndSet(false, true)) return@IFrameCallback
         lastInferAt = now
         try {
@@ -728,8 +728,8 @@ class AusbcCameraController(
             val wantH = HudPrefs.previewHeight(context)
             detectEnabled = HudPrefs.detect(context)
             confThreshold = HudPrefs.confidence(context)
-            // Inference is the single most expensive thing we do on CPU; throttle it.
-            detectIntervalMs = HudPrefs.detectIntervalMs(context).toLong().coerceAtLeast(100L)
+            // Inference is the single most expensive thing we do on CPU; throttle it (or 0 for Free Run).
+            detectIntervalMs = HudPrefs.detectIntervalMs(context).toLong().coerceAtLeast(0L)
 
             cam.open(ctrlBlock)
             // One-time dump of the descriptors the camera advertises, so the frame-rate

@@ -58,7 +58,7 @@ class WifiCameraController(
     }
     private val busy = AtomicBoolean(false)
     private var lastInferAt = 0L
-    private val detectIntervalMs = 500L
+    private var detectIntervalMs = 500L
 
     @Volatile
     var isOpen = false
@@ -78,6 +78,7 @@ class WifiCameraController(
 
     fun open(url: String) {
         if (isOpen) close()
+        detectIntervalMs = HudPrefs.detectIntervalMs(context).toLong().coerceAtLeast(0L)
         initDetector()
 
         HudLogger.i(TAG, "Opening WiFi camera: $url")
@@ -225,7 +226,7 @@ class WifiCameraController(
         val isRecActive = (recorder != null && recorder.isRecording)
         val det = detector
         val now = System.currentTimeMillis()
-        val isDetDue = (det != null && now - lastInferAt >= detectIntervalMs && !busy.get())
+        val isDetDue = (det != null && (detectIntervalMs <= 0 || now - lastInferAt >= detectIntervalMs) && !busy.get())
 
         if (isRecActive || isDetDue) {
             val need = w * h * 3 / 2
