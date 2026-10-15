@@ -218,4 +218,94 @@ class HudUnitTests {
         assertEquals("back", com.driving.hud.usbcamera.util.HudPrefs.FACING_BACK)
         assertEquals("front", com.driving.hud.usbcamera.util.HudPrefs.FACING_FRONT)
     }
+
+    @Test
+    fun testConvertChromaPassthroughDirect() {
+        val w = 4
+        val h = 4
+        val src = ByteArray(w * h * 3 / 2)
+        // Fill Y with 1s
+        for (i in 0 until 16) src[i] = 1
+        // Fill UV with [10, 20, 30, 40, 50, 60, 70, 80]
+        val chroma = byteArrayOf(10, 20, 30, 40, 50, 60, 70, 80)
+        System.arraycopy(chroma, 0, src, 16, 8)
+
+        val dst = ByteArray(w * h * 3 / 2)
+        com.driving.hud.usbcamera.record.MkvRecorder.convertChroma(
+            src = src,
+            dst = dst,
+            width = w,
+            height = h,
+            stride = w,
+            sliceHeight = h,
+            swapChroma = false
+        )
+
+        // Verify Y unchanged
+        for (i in 0 until 16) assertEquals(1.toByte(), dst[i])
+        // Verify UV unswapped (correct color preservation)
+        for (i in 0 until 8) assertEquals(chroma[i], dst[16 + i])
+    }
+
+    @Test
+    fun testConvertChromaSwapped() {
+        val w = 4
+        val h = 4
+        val src = ByteArray(w * h * 3 / 2)
+        val chroma = byteArrayOf(10, 20, 30, 40, 50, 60, 70, 80)
+        System.arraycopy(chroma, 0, src, 16, 8)
+
+        val dst = ByteArray(w * h * 3 / 2)
+        com.driving.hud.usbcamera.record.MkvRecorder.convertChroma(
+            src = src,
+            dst = dst,
+            width = w,
+            height = h,
+            stride = w,
+            sliceHeight = h,
+            swapChroma = true
+        )
+
+        val expected = byteArrayOf(20, 10, 40, 30, 60, 50, 80, 70)
+        for (i in 0 until 8) assertEquals(expected[i], dst[16 + i])
+    }
+
+    @Test
+    fun testConvertChromaWithStridePadding() {
+        val w = 4
+        val h = 4
+        val stride = 6
+        val sliceH = 4
+        val src = ByteArray(w * h * 3 / 2)
+        val chroma = byteArrayOf(10, 20, 30, 40, 50, 60, 70, 80)
+        System.arraycopy(chroma, 0, src, 16, 8)
+
+        val dst = ByteArray(stride * sliceH * 3 / 2)
+        com.driving.hud.usbcamera.record.MkvRecorder.convertChroma(
+            src = src,
+            dst = dst,
+            width = w,
+            height = h,
+            stride = stride,
+            sliceHeight = sliceH,
+            swapChroma = false
+        )
+
+        val dstUv = stride * sliceH
+        // Row 0 of chroma: bytes 0..3 should be 10, 20, 30, 40; bytes 4..5 should be padded with 128
+        assertEquals(10.toByte(), dst[dstUv + 0])
+        assertEquals(20.toByte(), dst[dstUv + 1])
+        assertEquals(30.toByte(), dst[dstUv + 2])
+        assertEquals(40.toByte(), dst[dstUv + 3])
+        assertEquals(128.toByte(), dst[dstUv + 4])
+        assertEquals(128.toByte(), dst[dstUv + 5])
+
+        // Row 1 of chroma: bytes 6..9 should be 50, 60, 70, 80; bytes 10..11 should be padded with 128
+        assertEquals(50.toByte(), dst[dstUv + stride + 0])
+        assertEquals(60.toByte(), dst[dstUv + stride + 1])
+        assertEquals(70.toByte(), dst[dstUv + stride + 2])
+        assertEquals(80.toByte(), dst[dstUv + stride + 3])
+        assertEquals(128.toByte(), dst[dstUv + stride + 4])
+        assertEquals(128.toByte(), dst[dstUv + stride + 5])
+    }
 }

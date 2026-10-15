@@ -29,6 +29,7 @@ A high-performance, fault-tolerant Android application and Heads-Up Display (HUD
   - Prefers physical, removable **MicroSD cards** (`[SD_CARD]/Android/data/com.driving.hud.usbcamera/files/Movies`) so phone storage is never filled.
   - If no SD card is detected, saves internally and automatically exports to the public **MediaStore (`Movies/HUD`)** in the background so recordings appear immediately in Gallery and Google Photos.
 - **Zero-Copy NV21 Overlay Burn-In**: Renders tactical HUD bounding boxes, vehicle classifications, distances (meters), and TTC warning badges directly onto the recorded video frames.
+- **True-Color Chroma Pipeline**: Direct hardware-aligned chroma mapping prevents red/blue color channel inversion across USB, built-in, and WiFi cameras, with an optional UV-swap toggle in Settings for non-standard OEM encoders.
 - **Synchronized Subtitles (.SRT)**: Generates a matching `.srt` subtitle file alongside every recording, providing frame-by-frame telemetry and detection logs in standard media players (VLC, MX Player, etc.).
 
 ### 4. 🚘 Driving HUD Display

@@ -53,6 +53,14 @@
             android:text="Record Bounding Boxes on Video"
             android:textColor="@color/hud_text_primary" />
 
+        <Switch
+            android:id="@+id/swSwapChroma"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Invert Video Recording Colors (Swap UV)"
+            android:textColor="@color/hud_text_primary" />
+
         <!-- Camera Source Selection -->
         <TextView
             android:layout_width="wrap_content"

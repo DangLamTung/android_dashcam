@@ -51,6 +51,7 @@ class SettingsActivity : AppCompatActivity() {
         val swNight = findViewById<Switch>(R.id.swNight)
         val swMirror = findViewById<Switch>(R.id.swMirror)
         val swRecordOverlay = findViewById<Switch>(R.id.swRecordOverlay)
+        val swSwapChroma = findViewById<Switch>(R.id.swSwapChroma)
         val swDetect = findViewById<Switch>(R.id.swDetect)
         val rbCamUsb = findViewById<RadioButton>(R.id.rbCamUsb)
         val rbCamSystem = findViewById<RadioButton>(R.id.rbCamSystem)
@@ -82,6 +83,7 @@ class SettingsActivity : AppCompatActivity() {
         swNight.isChecked = HudPrefs.night(this)
         swMirror.isChecked = HudPrefs.mirror(this)
         swRecordOverlay.isChecked = HudPrefs.recordOverlay(this)
+        swSwapChroma.isChecked = HudPrefs.swapRecordChroma(this)
         swDetect.isChecked = HudPrefs.detect(this)
         etModel.setText(HudPrefs.modelAsset(this))
 
@@ -143,6 +145,7 @@ class SettingsActivity : AppCompatActivity() {
             HudPrefs.setNight(this, swNight.isChecked)
             HudPrefs.setMirror(this, swMirror.isChecked)
             HudPrefs.setRecordOverlay(this, swRecordOverlay.isChecked)
+            HudPrefs.setSwapRecordChroma(this, swSwapChroma.isChecked)
             HudPrefs.setDetect(this, swDetect.isChecked)
 
             val mode = when {

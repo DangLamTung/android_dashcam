@@ -33,13 +33,70 @@ import java.util.concurrent.TimeUnit
  */
 internal class MkvRecorder(private val context: Context) {
 
-    private companion object {
+    internal companion object {
         const val TAG = "MkvRecorder"
 
         /** Frames in flight; deeper only adds latency and memory. */
         const val QUEUE_DEPTH = 3
 
         const val MIME = MediaFormat.MIMETYPE_VIDEO_AVC
+
+        /**
+         * Copies camera NV21/NV12 buffer into the encoder input buffer, handling row stride,
+         * slice height padding, and optional chroma swapping.
+         */
+        internal fun convertChroma(
+            src: ByteArray,
+            dst: ByteArray,
+            width: Int,
+            height: Int,
+            stride: Int,
+            sliceHeight: Int,
+            swapChroma: Boolean
+        ) {
+            val ySize = width * height
+            val uvSize = width * height / 2
+
+            if (stride == width) {
+                System.arraycopy(src, 0, dst, 0, ySize)
+            } else {
+                for (row in 0 until height) {
+                    System.arraycopy(src, row * width, dst, row * stride, width)
+                    if (stride > width) {
+                        java.util.Arrays.fill(dst, row * stride + width, (row + 1) * stride, 0.toByte())
+                    }
+                }
+            }
+
+            val srcUv = ySize
+            val dstUv = stride * sliceHeight
+            val rows = height / 2
+
+            if (!swapChroma && stride == width && dstUv == ySize) {
+                System.arraycopy(src, srcUv, dst, dstUv, uvSize)
+            } else {
+                var d = dstUv
+                var s = srcUv
+                for (row in 0 until rows) {
+                    if (swapChroma) {
+                        var x = 0
+                        val rowEnd = width - 1
+                        while (x < rowEnd) {
+                            dst[d + x] = src[s + x + 1]
+                            dst[d + x + 1] = src[s + x]
+                            x += 2
+                        }
+                    } else {
+                        System.arraycopy(src, s, dst, d, width)
+                    }
+                    if (stride > width) {
+                        java.util.Arrays.fill(dst, d + width, d + stride, 128.toByte())
+                    }
+                    s += width
+                    d += stride
+                }
+            }
+        }
     }
 
     @Volatile
@@ -321,31 +378,10 @@ internal class MkvRecorder(private val context: Context) {
         queued++
     }
 
-    /** NV21 (VU) -> NV12 (UV) with the encoder's row padding, into the reused buffer. */
+    /** Converts and aligns camera buffer with encoder format, respecting user chroma preference. */
     private fun convertToNv12(nv21: ByteArray) {
-        val yBase = 0
-        for (row in 0 until height) {
-            System.arraycopy(nv21, row * width, nv12, yBase + row * stride, width)
-        }
-        val srcUv = width * height
-        val dstUv = stride * sliceHeight
-        var d = dstUv
-        var s = srcUv
-        val rows = height / 2
-        for (row in 0 until rows) {
-            var x = 0
-            val rowEnd = width - 1
-            while (x < rowEnd) {
-                // swap V,U -> U,V
-                nv12[d + x] = nv21[s + x + 1]
-                nv12[d + x + 1] = nv21[s + x]
-                x += 2
-            }
-            // pad the remainder of the chroma row if the stride is wider than the image
-            if (stride > width) java.util.Arrays.fill(nv12, d + width, d + stride, 128.toByte())
-            s += width
-            d += stride
-        }
+        val swap = HudPrefs.swapRecordChroma(context)
+        convertChroma(nv21, nv12, width, height, stride, sliceHeight, swap)
     }
 
     /** @return true once the end-of-stream flag has been seen (only meaningful when draining). */

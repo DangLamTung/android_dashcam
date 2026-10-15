@@ -30,6 +30,7 @@ object HudPrefs {
     private const val KEY_CALIB_PITCH = "calib_pitch_deg"
     private const val KEY_CALIB_FOV = "calib_fov_deg"
     private const val KEY_RECORD_OVERLAY = "record_overlay"
+    private const val KEY_SWAP_RECORD_CHROMA = "swap_record_chroma"
 
     private fun sp(ctx: Context): SharedPreferences =
         ctx.getSharedPreferences(FILE, Context.MODE_PRIVATE)
@@ -121,6 +122,9 @@ object HudPrefs {
 
     fun recordOverlay(ctx: Context) = sp(ctx).getBoolean(KEY_RECORD_OVERLAY, true)
     fun setRecordOverlay(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean(KEY_RECORD_OVERLAY, v).apply()
+
+    fun swapRecordChroma(ctx: Context) = sp(ctx).getBoolean(KEY_SWAP_RECORD_CHROMA, false)
+    fun setSwapRecordChroma(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean(KEY_SWAP_RECORD_CHROMA, v).apply()
 
     const val MODE_USB = "usb"
     const val MODE_SYSTEM = "system"
