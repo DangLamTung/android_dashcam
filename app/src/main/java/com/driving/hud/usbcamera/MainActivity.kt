@@ -58,6 +58,14 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
     private lateinit var cameraManager: CameraCoordinator
     private lateinit var batteryTracker: BatteryTracker
 
+    private val uiHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val telemetryTicker = object : Runnable {
+        override fun run() {
+            refreshTelemetry()
+            uiHandler.postDelayed(this, 1000)
+        }
+    }
+
     private var isMirrored = false
     private var isHudMode = false
     private var isCalibrationMode = false
@@ -583,6 +591,7 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
         }
         binding.hudOverlayView.setTelemetry(lines)
         binding.tvBatteryInfo.text = batterySnap.toDetailedSummary()
+        batteryTracker.logIfNeeded(minIntervalMs = 30_000)
     }
 
     /**
@@ -1026,8 +1035,10 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
 
     override fun onStart() {
         super.onStart()
-        HudLogger.i(TAG, "onStart - watchdog")
+        HudLogger.i(TAG, "onStart - watchdog & ticker")
         cameraManager.startWatchdog()
+        uiHandler.removeCallbacks(telemetryTicker)
+        uiHandler.post(telemetryTicker)
     }
 
     override fun onResume() {
@@ -1045,6 +1056,7 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
     override fun onStop() {
         super.onStop()
         HudLogger.i(TAG, "onStop - background (receiver stays registered)")
+        uiHandler.removeCallbacks(telemetryTicker)
         cameraManager.onAppBackgrounded()
     }
 
