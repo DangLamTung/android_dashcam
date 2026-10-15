@@ -34,9 +34,23 @@ A high-performance, fault-tolerant Android application and Heads-Up Display (HUD
 ### 4. 🚘 Driving HUD Display
 - **Windshield Mirror Mode**: 1-tap horizontal flip so the screen reflects legibly when placed on a dashboard reflecting onto the windshield.
 - **Picture-in-Picture (PiP) & Split Screen**: Run navigation apps (Google Maps, Waze) in split-screen or float the HUD as a PiP window while keeping detection and collision alerts active.
-- **Live Battery & Thermal Telemetry**: Real-time battery drain rate (%/hr), temperature, and FPS monitoring.
+- **Live Battery & Thermal Telemetry**: Real-time battery drain rate (%/hr), temperature, and FPS monitoring with 5-second EMA low-pass filtering.
 
 ---
+
+## 🔋 Real-World Battery & Power Benchmarks
+
+Field tested on a device with a **7,000 mAh** battery running **YOLOv10n AI object detection**, active camera streaming, and a **navigation app running concurrently in Picture-in-Picture (PiP)**:
+
+| Metric | Measured Real-World Value |
+| :--- | :--- |
+| **Average Power Draw** | **2.7 W – 3.0 W** (~700–780 mA @ 3.85V) |
+| **Peak Surge Power** | **~4.0 W** (during complex multi-object inference passes) |
+| **Measured Drain Rate** | **~1% every 6 minutes** (approx. **10.0% / hour**) |
+| **Total Continuous Runtime** | **~10 hours** of driving on a full 7,000 mAh charge |
+| **Multitasking Stability** | Full background tracking & alerts sustained while Google Maps/Waze navigates in PiP |
+
+> **Note on Telemetry Smoothing**: The HUD applies a 5-second Exponential Moving Average (EMA, $\alpha = 0.2$) filter to instantaneous current and wattage, ensuring that transient 4W inference spikes do not cause fluctuating battery runtime estimates.
 
 ## 📁 Repository Structure
 
