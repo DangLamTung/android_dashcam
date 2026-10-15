@@ -60,6 +60,14 @@ class WifiCameraController(
     private var lastInferAt = 0L
     private var detectIntervalMs = 500L
 
+    // FPS calculation & telemetry
+    private var lastFpsCalcNs = 0L
+    private var framesCounted = 0
+    private var currentFps = 0
+    private var frameIntervalMs = 0f
+    private var lastFrameNs = 0L
+    private var lastInferMs = -1f
+
     @Volatile
     var isOpen = false
         private set
@@ -205,6 +213,33 @@ class WifiCameraController(
         frameW = w
         frameH = h
 
+        val nowNs = System.nanoTime()
+        val prevNs = lastFrameNs
+        lastFrameNs = nowNs
+        if (prevNs != 0L) {
+            val deltaMs = (nowNs - prevNs) / 1_000_000f
+            frameIntervalMs = if (frameIntervalMs <= 0f) deltaMs else 0.8f * frameIntervalMs + 0.2f * deltaMs
+        }
+        framesCounted++
+
+        if (lastFpsCalcNs == 0L) {
+            lastFpsCalcNs = nowNs
+        } else if (nowNs - lastFpsCalcNs >= 1_000_000_000L) {
+            val elapsedSec = (nowNs - lastFpsCalcNs) / 1_000_000_000.0
+            currentFps = (framesCounted / elapsedSec).toInt().coerceAtLeast(0)
+            framesCounted = 0
+            lastFpsCalcNs = nowNs
+            val t = Telemetry(
+                fps = currentFps,
+                frameIntervalMs = frameIntervalMs,
+                cpuPercent = 0,
+                tempC = -1,
+                inferMs = lastInferMs,
+                provider = HudPrefs.detectProvider(context).ifEmpty { "NCNN" }
+            )
+            listener.onTelemetry(t)
+        }
+
         // 1. Render to outputSurface via Canvas
         val surface = outputSurface
         if (surface != null && surface.isValid) {
@@ -242,7 +277,9 @@ class WifiCameraController(
                 val conf = HudPrefs.confidence(context)
                 inferExecutor.execute {
                     try {
+                        val t0 = System.nanoTime()
                         val dets = det?.detect(copy, w, h, conf).orEmpty()
+                        lastInferMs = (System.nanoTime() - t0) / 1_000_000f
                         listener.onDetections(dets)
                     } catch (t: Throwable) {
                         HudLogger.w(TAG, "Inference error: ${t.message}")

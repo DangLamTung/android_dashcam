@@ -12,7 +12,9 @@ import android.media.Image
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
+import android.util.Size
 import android.view.Surface
+import android.view.SurfaceHolder
 import com.driving.hud.usbcamera.detect.Detection
 import com.driving.hud.usbcamera.detect.Detector
 import com.driving.hud.usbcamera.detect.DetectorFactory
@@ -27,7 +29,8 @@ import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Camera controller for the built-in system camera (rear/front) using Android Camera2 API.
- * Provides live preview, NV21 conversion for ONNX detection, and dashcam recording.
+ * Provides live preview, resolution negotiation from device characteristics, NV21 conversion
+ * for ONNX/ncnn detection, FPS telemetry, and dashcam recording.
  */
 class SystemCameraController(
     private val context: Context,
@@ -38,6 +41,40 @@ class SystemCameraController(
         private const val TAG = "SystemCameraCtrl"
         private const val DEFAULT_WIDTH = 1280
         private const val DEFAULT_HEIGHT = 720
+
+        /**
+         * Selects the closest supported size from the camera's available sizes.
+         */
+        internal fun chooseOptimalDimension(
+            primaryChoices: List<Pair<Int, Int>>?,
+            fallbackChoices: List<Pair<Int, Int>>?,
+            targetW: Int,
+            targetH: Int
+        ): Pair<Int, Int> {
+            val list = when {
+                !primaryChoices.isNullOrEmpty() -> primaryChoices
+                !fallbackChoices.isNullOrEmpty() -> fallbackChoices
+                else -> return targetW to targetH
+            }
+            // 1. Exact match
+            list.firstOrNull { it.first == targetW && it.second == targetH }?.let { return it }
+
+            // 2. Same aspect ratio (within 5%), closest area
+            val targetAspect = targetW.toDouble() / targetH
+            val sameAspect = list.filter {
+                Math.abs((it.first.toDouble() / it.second) - targetAspect) < 0.05
+            }
+            if (sameAspect.isNotEmpty()) {
+                return sameAspect.minByOrNull {
+                    Math.abs(it.first * it.second - targetW * targetH)
+                }!!
+            }
+
+            // 3. Closest area
+            return list.minByOrNull {
+                Math.abs(it.first * it.second - targetW * targetH)
+            }!!
+        }
     }
 
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as AndroidCameraManager
@@ -51,7 +88,10 @@ class SystemCameraController(
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
     private var imageReader: ImageReader? = null
+    private var characteristics: CameraCharacteristics? = null
+
     private var outputSurface: Surface? = null
+    private var outputHolder: SurfaceHolder? = null
 
     var isFacingBack = true
         private set
@@ -68,6 +108,14 @@ class SystemCameraController(
     private var detectIntervalMs = 500L
     private val framesInWindow = AtomicInteger(0)
 
+    // FPS calculation & telemetry
+    private var lastFpsCalcNs = 0L
+    private var framesCounted = 0
+    private var currentFps = 0
+    private var frameIntervalMs = 0f
+    private var lastFrameNs = 0L
+    private var lastInferMs = -1f
+
     @Volatile
     var isOpen = false
         private set
@@ -83,10 +131,14 @@ class SystemCameraController(
         }
     }
 
-    fun setOutputSurface(surface: Surface?) {
+    fun setOutputSurface(surface: Surface?, holder: SurfaceHolder? = null) {
         this.outputSurface = surface
-        if (isOpen && cameraDevice != null) {
-            startPreviewSession()
+        this.outputHolder = holder
+        holder?.setFixedSize(frameW, frameH)
+        cameraHandler?.post {
+            if (isOpen && cameraDevice != null) {
+                startPreviewSession()
+            }
         }
     }
 
@@ -123,11 +175,24 @@ class SystemCameraController(
                 return
             }
 
-            // Pick preview dimensions from preferences
-            frameW = HudPrefs.previewWidth(context)
-            frameH = HudPrefs.previewHeight(context)
+            val chars = cameraManager.getCameraCharacteristics(cameraIdToOpen)
+            characteristics = chars
+            val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
 
-            imageReader = ImageReader.newInstance(frameW, frameH, ImageFormat.YUV_420_888, 2).apply {
+            // Pick optimal preview dimensions from supported configurations
+            val yuvSizes = map?.getOutputSizes(ImageFormat.YUV_420_888)?.map { it.width to it.height }
+            val surfaceSizes = map?.getOutputSizes(SurfaceHolder::class.java)?.map { it.width to it.height }
+            val targetW = HudPrefs.previewWidth(context)
+            val targetH = HudPrefs.previewHeight(context)
+
+            val (optW, optH) = chooseOptimalDimension(surfaceSizes, yuvSizes, targetW, targetH)
+            frameW = optW
+            frameH = optH
+            HudLogger.i(TAG, "Selected system camera resolution: ${frameW}x$frameH (target ${targetW}x$targetH)")
+
+            outputHolder?.setFixedSize(frameW, frameH)
+
+            imageReader = ImageReader.newInstance(frameW, frameH, ImageFormat.YUV_420_888, 3).apply {
                 setOnImageAvailableListener({ reader ->
                     onFrameAvailable(reader)
                 }, cameraHandler)
@@ -150,7 +215,7 @@ class SystemCameraController(
                 }
 
                 override fun onError(camera: CameraDevice, error: Int) {
-                    HudLogger.e(TAG, "System camera error: $error")
+                    HudLogger.e(TAG, "System camera error code: $error")
                     listener.onError("Camera error code: $error")
                     close()
                 }
@@ -171,8 +236,22 @@ class SystemCameraController(
             captureSession = null
         } catch (_: Throwable) {}
 
-        val surfaces = mutableListOf<Surface>(reader.surface)
-        outputSurface?.let { if (it.isValid) surfaces.add(it) }
+        outputHolder?.setFixedSize(frameW, frameH)
+
+        val surfaces = mutableListOf<Surface>()
+        if (reader.surface.isValid) {
+            surfaces.add(reader.surface)
+        }
+        val out = outputSurface
+        val hasPreview = (out != null && out.isValid)
+        if (hasPreview && out != null) {
+            surfaces.add(out)
+        }
+
+        if (surfaces.isEmpty()) {
+            HudLogger.w(TAG, "No valid surfaces to create capture session")
+            return
+        }
 
         try {
             device.createCaptureSession(surfaces, object : CameraCaptureSession.StateCallback() {
@@ -181,24 +260,56 @@ class SystemCameraController(
                     captureSession = session
                     try {
                         val requestBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
-                            addTarget(reader.surface)
-                            outputSurface?.let { if (it.isValid) addTarget(it) }
+                            surfaces.forEach { addTarget(it) }
                             set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
-                            set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                            val afModes = characteristics?.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)
+                            if (afModes?.contains(CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE) == true) {
+                                set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                            }
                         }
                         session.setRepeatingRequest(requestBuilder.build(), null, handler)
-                        HudLogger.i(TAG, "Camera capture session repeating request started")
+                        HudLogger.i(TAG, "Camera capture session repeating request started with ${surfaces.size} surface(s)")
                     } catch (t: Throwable) {
-                        HudLogger.e(TAG, "Failed to start capture request: ${t.message}")
+                        HudLogger.e(TAG, "Failed to start capture request: ${t.message}", t)
                     }
                 }
 
                 override fun onConfigureFailed(session: CameraCaptureSession) {
                     HudLogger.e(TAG, "Failed to configure camera capture session")
+                    // If combined preview session failed, fallback to reader.surface so detection & recording stay active
+                    if (surfaces.size > 1 && reader.surface.isValid) {
+                        HudLogger.w(TAG, "Retrying capture session with reader.surface only")
+                        try {
+                            device.createCaptureSession(listOf(reader.surface), object : CameraCaptureSession.StateCallback() {
+                                override fun onConfigured(fallbackSession: CameraCaptureSession) {
+                                    captureSession = fallbackSession
+                                    try {
+                                        val req = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                                            addTarget(reader.surface)
+                                            set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+                                        }
+                                        fallbackSession.setRepeatingRequest(req.build(), null, handler)
+                                        HudLogger.i(TAG, "Fallback session started with reader.surface")
+                                    } catch (t: Throwable) {
+                                        HudLogger.e(TAG, "Fallback repeating request failed: ${t.message}")
+                                    }
+                                }
+
+                                override fun onConfigureFailed(s: CameraCaptureSession) {
+                                    HudLogger.e(TAG, "Fallback capture session also failed")
+                                    listener.onError("Failed to configure camera session")
+                                }
+                            }, handler)
+                        } catch (t: Throwable) {
+                            HudLogger.e(TAG, "Fallback createCaptureSession error: ${t.message}")
+                        }
+                    } else {
+                        listener.onError("Failed to configure camera session")
+                    }
                 }
             }, handler)
         } catch (t: Throwable) {
-            HudLogger.e(TAG, "createCaptureSession failed: ${t.message}")
+            HudLogger.e(TAG, "createCaptureSession failed: ${t.message}", t)
         }
     }
 
@@ -209,7 +320,34 @@ class SystemCameraController(
             null
         } ?: return
 
+        val nowNs = System.nanoTime()
+        val prevNs = lastFrameNs
+        lastFrameNs = nowNs
+        if (prevNs != 0L) {
+            val deltaMs = (nowNs - prevNs) / 1_000_000f
+            frameIntervalMs = if (frameIntervalMs <= 0f) deltaMs else 0.8f * frameIntervalMs + 0.2f * deltaMs
+        }
+        framesCounted++
         framesInWindow.incrementAndGet()
+
+        // Publish live telemetry every second
+        if (lastFpsCalcNs == 0L) {
+            lastFpsCalcNs = nowNs
+        } else if (nowNs - lastFpsCalcNs >= 1_000_000_000L) {
+            val elapsedSec = (nowNs - lastFpsCalcNs) / 1_000_000_000.0
+            currentFps = (framesCounted / elapsedSec).toInt().coerceAtLeast(0)
+            framesCounted = 0
+            lastFpsCalcNs = nowNs
+            val t = Telemetry(
+                fps = currentFps,
+                frameIntervalMs = frameIntervalMs,
+                cpuPercent = 0,
+                tempC = -1,
+                inferMs = lastInferMs,
+                provider = HudPrefs.detectProvider(context).ifEmpty { "NCNN" }
+            )
+            listener.onTelemetry(t)
+        }
 
         try {
             val need = frameW * frameH * 3 / 2
@@ -237,10 +375,12 @@ class SystemCameraController(
                 val conf = HudPrefs.confidence(context)
                 inferExecutor.execute {
                     try {
+                        val t0 = System.nanoTime()
                         val dets = det.detect(copy, w, h, conf)
+                        lastInferMs = (System.nanoTime() - t0) / 1_000_000f
                         listener.onDetections(dets)
                     } catch (t: Throwable) {
-                        HudLogger.w(TAG, "Detection error: ${t.message}")
+                        HudLogger.w(TAG, "Inference error: ${t.message}")
                     } finally {
                         busy.set(false)
                     }
@@ -251,8 +391,10 @@ class SystemCameraController(
         }
     }
 
-    /** Converts android.media.Image (YUV_420_888) to NV21 format. */
+    /** Converts android.media.Image (YUV_420_888) to NV21 format safely with bounds validation. */
     private fun yuv420ToNv21(image: Image, outNv21: ByteArray, width: Int, height: Int) {
+        val w = image.width.coerceAtMost(width)
+        val h = image.height.coerceAtMost(height)
         val planes = image.planes
         val yPlane = planes[0].buffer
         val uPlane = planes[1].buffer
@@ -262,15 +404,16 @@ class SystemCameraController(
         val yRowStride = planes[0].rowStride
         val yPixelStride = planes[0].pixelStride
 
-        var pos = 0
-        if (yRowStride == width && yPixelStride == 1) {
+        if (yRowStride == width && yPixelStride == 1 && yPlane.remaining() >= ySize) {
+            yPlane.position(0)
             yPlane.get(outNv21, 0, ySize)
-            pos = ySize
         } else {
-            for (row in 0 until height) {
-                yPlane.position(row * yRowStride)
-                yPlane.get(outNv21, pos, width)
-                pos += width
+            var yPos = 0
+            for (row in 0 until h) {
+                val rowOffset = (row * yRowStride).coerceAtMost((yPlane.limit() - w).coerceAtLeast(0))
+                yPlane.position(rowOffset)
+                yPlane.get(outNv21, yPos, w)
+                yPos += width
             }
         }
 
@@ -284,12 +427,13 @@ class SystemCameraController(
         val vLimit = vPlane.limit()
         val uLimit = uPlane.limit()
 
+        var pos = ySize
         for (row in 0 until halfH) {
             for (col in 0 until halfW) {
                 val vIdx = row * vRowStride + col * vPixelStride
                 val uIdx = row * uRowStride + col * uPixelStride
-                outNv21[pos++] = if (vIdx < vLimit) vPlane.get(vIdx) else 128.toByte()
-                outNv21[pos++] = if (uIdx < uLimit) uPlane.get(uIdx) else 128.toByte()
+                outNv21[pos++] = if (vIdx in 0 until vLimit) vPlane.get(vIdx) else 128.toByte()
+                outNv21[pos++] = if (uIdx in 0 until uLimit) uPlane.get(uIdx) else 128.toByte()
             }
         }
     }
@@ -341,25 +485,29 @@ class SystemCameraController(
 
     fun close() {
         isOpen = false
-        try {
-            captureSession?.close()
-        } catch (_: Throwable) {}
+        val session = captureSession
         captureSession = null
-
         try {
-            cameraDevice?.close()
+            session?.close()
         } catch (_: Throwable) {}
+
+        val device = cameraDevice
         cameraDevice = null
-
         try {
-            imageReader?.close()
+            device?.close()
         } catch (_: Throwable) {}
+
+        val reader = imageReader
         imageReader = null
-
         try {
-            rec?.stop()
+            reader?.close()
         } catch (_: Throwable) {}
+
+        val r = rec
         rec = null
+        try {
+            r?.stop()
+        } catch (_: Throwable) {}
 
         HudLogger.i(TAG, "System camera closed")
     }

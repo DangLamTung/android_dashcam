@@ -19,23 +19,34 @@ class HudSurfaceView @JvmOverloads constructor(
 
     /** Called with the Surface on create/change, and null when destroyed. */
     var surfaceListener: ((Surface?) -> Unit)? = null
+    var surfaceHolderListener: ((Surface?, SurfaceHolder?) -> Unit)? = null
 
     init {
         holder.addCallback(this)
     }
 
+    fun setFixedBufferSize(width: Int, height: Int) {
+        if (width > 0 && height > 0) {
+            HudLogger.i(TAG, "Setting fixed buffer size: ${width}x$height")
+            holder.setFixedSize(width, height)
+        }
+    }
+
     override fun surfaceCreated(holder: SurfaceHolder) {
         HudLogger.i(TAG, "Surface created")
         surfaceListener?.invoke(holder.surface)
+        surfaceHolderListener?.invoke(holder.surface, holder)
     }
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
         HudLogger.i(TAG, "Surface changed: format=$format, size=${width}x$height")
         surfaceListener?.invoke(holder.surface)
+        surfaceHolderListener?.invoke(holder.surface, holder)
     }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         HudLogger.i(TAG, "Surface destroyed")
         surfaceListener?.invoke(null)
+        surfaceHolderListener?.invoke(null, null)
     }
 }

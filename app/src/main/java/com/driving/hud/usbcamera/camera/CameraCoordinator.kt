@@ -2,6 +2,7 @@ package com.driving.hud.usbcamera.camera
 
 import android.content.Context
 import android.view.Surface
+import android.view.SurfaceHolder
 import com.driving.hud.usbcamera.detect.Detection
 import com.driving.hud.usbcamera.record.RecordingStorageManager
 import com.driving.hud.usbcamera.util.HudLogger
@@ -30,6 +31,7 @@ class CameraCoordinator(
         private set
 
     private var currentSurface: Surface? = null
+    private var currentHolder: SurfaceHolder? = null
 
     fun registerReceiver() {
         usbController.registerReceiver()
@@ -39,11 +41,12 @@ class CameraCoordinator(
         usbController.unregister()
     }
 
-    fun setOutputSurface(surface: Surface?) {
+    fun setOutputSurface(surface: Surface?, holder: SurfaceHolder? = null) {
         currentSurface = surface
+        currentHolder = holder
         when (currentMode) {
             HudPrefs.MODE_USB -> usbController.setOutputSurface(surface)
-            HudPrefs.MODE_SYSTEM -> systemController.setOutputSurface(surface)
+            HudPrefs.MODE_SYSTEM -> systemController.setOutputSurface(surface, holder)
             HudPrefs.MODE_WIFI -> wifiController.setOutputSurface(surface)
         }
     }
@@ -91,7 +94,7 @@ class CameraCoordinator(
         HudPrefs.setCameraMode(context, newMode)
 
         // Start new
-        setOutputSurface(currentSurface)
+        setOutputSurface(currentSurface, currentHolder)
         scanAndConnect(forcePermission = true)
     }
 

@@ -308,4 +308,55 @@ class HudUnitTests {
         assertEquals(128.toByte(), dst[dstUv + stride + 4])
         assertEquals(128.toByte(), dst[dstUv + stride + 5])
     }
+
+    @Test
+    fun testSystemCameraChooseOptimalSizeExactMatch() {
+        val sizes = listOf(
+            1920 to 1080,
+            1280 to 720,
+            640 to 480
+        )
+        val (w, h) = com.driving.hud.usbcamera.camera.SystemCameraController.chooseOptimalDimension(
+            primaryChoices = sizes,
+            fallbackChoices = null,
+            targetW = 1280,
+            targetH = 720
+        )
+        assertEquals(1280, w)
+        assertEquals(720, h)
+    }
+
+    @Test
+    fun testSystemCameraChooseOptimalSizeAspectMatch() {
+        // Requested 960x540 (16:9), but camera only has 1920x1080, 1280x720, and 640x480 (4:3)
+        val sizes = listOf(
+            1920 to 1080,
+            1280 to 720,
+            640 to 480
+        )
+        val (w, h) = com.driving.hud.usbcamera.camera.SystemCameraController.chooseOptimalDimension(
+            primaryChoices = sizes,
+            fallbackChoices = null,
+            targetW = 960,
+            targetH = 540
+        )
+        // Should choose closest 16:9 match, which is 1280x720
+        assertEquals(1280, w)
+        assertEquals(720, h)
+    }
+
+    @Test
+    fun testSystemCameraChooseOptimalSizeFallback() {
+        val fallback = listOf(
+            640 to 480
+        )
+        val (w, h) = com.driving.hud.usbcamera.camera.SystemCameraController.chooseOptimalDimension(
+            primaryChoices = null,
+            fallbackChoices = fallback,
+            targetW = 1280,
+            targetH = 720
+        )
+        assertEquals(640, w)
+        assertEquals(480, h)
+    }
 }

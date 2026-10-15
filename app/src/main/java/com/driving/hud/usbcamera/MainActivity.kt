@@ -169,9 +169,9 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
             updateControlBarInset()
         }
 
-        // Route the HUD surface to the MediaCodec renderer.
-        binding.cameraSurfaceView.surfaceListener = { surface ->
-            cameraManager.setOutputSurface(surface)
+        // Route the HUD surface to the camera renderer.
+        binding.cameraSurfaceView.surfaceHolderListener = { surface, holder ->
+            cameraManager.setOutputSurface(surface, holder)
         }
 
         // Back exits Calibration mode first, then HUD mode, otherwise closes the app.
@@ -747,6 +747,7 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
         val vw = binding.rootContainer.width
         val vh = binding.rootContainer.height
         if (fw <= 0 || fh <= 0 || vw <= 0 || vh <= 0) return
+        binding.cameraSurfaceView.setFixedBufferSize(fw, fh)
         val aspect = fw.toFloat() / fh
         binding.hudOverlayView.setVideoAspect(aspect)
         if (!force && fw == fitFrameW && fh == fitFrameH && vw == fitRootW && vh == fitRootH) return
@@ -1117,16 +1118,17 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
             binding.tvStatus.text = status
             binding.tvHomeStatus.text = status
             val color = when {
-                status.contains("Connected", ignoreCase = true) -> Color.parseColor("#00E676")
+                status.contains("Connected", ignoreCase = true) ||
+                    status.contains("Streaming", ignoreCase = true) -> Color.parseColor("#00E676")
                 status.contains("Waiting", ignoreCase = true) ||
                     status.contains("Connecting", ignoreCase = true) -> Color.parseColor("#FFD600")
                 else -> Color.parseColor("#FF1744")
             }
             binding.tvStatus.setTextColor(color)
             binding.tvHomeStatus.setTextColor(color)
-            // NOTE: tvHomeDetail is NOT touched here — it's managed by the
-            // scan/connect buttons so the periodic "Waiting" status doesn't
-            // overwrite the user's diagnostic message every 2s.
+            if (status.contains("Streaming", ignoreCase = true) && !isHudMode) {
+                binding.tvHomeDetail.text = "Streaming. Tap START HUD for fullscreen."
+            }
         }
     }
 
