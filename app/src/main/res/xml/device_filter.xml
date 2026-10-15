@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Filter for standard USB Video Class (UVC) devices: Class 14 (0x0E) -->
+    <usb-device class="14" />
+    <usb-device class="239" subclass="2" /> <!-- Miscellaneous / Common Class Video -->
+</resources>

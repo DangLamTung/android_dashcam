@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider paths so the HUD "Log" button can share the on-device log file. -->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <external-files-path name="hud_logs" path="logs/" />
+    <external-files-path name="hud_movies" path="Movies/" />
+    <external-path name="external_storage" path="." />
+</paths>

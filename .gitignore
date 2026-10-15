@@ -1,0 +1,24 @@
+# Release signing material — must never be committed. Losing the keystore means the app can
+# never be updated in place again, and leaking it lets anyone else publish as this app.
+keystore.properties
+*.jks
+*.keystore
+
+# Local machine configuration (SDK path).
+local.properties
+
+# Build output
+.gradle/
+build/
+app/build/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# On-device logs pulled with adb
+*.log

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="hud_bg">#000000</color>
+    <color name="hud_accent">#00E5FF</color>
+    <color name="hud_accent_warn">#FFD600</color>
+    <color name="hud_text_primary">#FFFFFF</color>
+    <color name="hud_text_secondary">#B0BEC5</color>
+    <color name="hud_button_bg">#33263238</color>
+
+    <color name="ic_launcher_background">#0B0F19</color>
+</resources>

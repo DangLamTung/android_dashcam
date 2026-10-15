@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-feature
+        android:name="android.hardware.usb.host"
+        android:required="true" />
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Android 13+ requires the CAMERA permission to grant USB access to
+         video-class (UVC) devices. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- The UVC engine runs the stream in a foreground service, which posts a
+         notification. From API 33 the notification is silently dropped unless this
+         permission is both declared and granted at runtime. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <application
+        android:allowBackup="true"
+        android:usesCleartextTraffic="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.AndroidUsbCameraHud">
+        <!--
+            Resizable on purpose. A fixed landscape lock blocks split screen on some OEM
+            builds, and without smallestScreenSize a window resize recreates the activity,
+            which drops the USB stream and re-runs the backend benchmark.
+
+            supportsPictureInPicture gives the floating-window mode: the HUD keeps streaming
+            on top of another app (navigation, music) without needing the "draw over other
+            apps" permission.
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:resizeableActivity="true"
+            android:supportsPictureInPicture="true"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|navigation|uiMode">
+            <!--
+                Explicit minimum window size. On small/compact screens this is what the
+                platform consults to decide whether an activity may run in a split-screen
+                cell at all; leaving it unset lets the system derive a minimum from the
+                layout, which for a dense HUD can be large enough to be refused. Keep these
+                small: the control bar scrolls horizontally, so a narrow cell stays usable.
+            -->
+            <layout
+                android:minWidth="240dp"
+                android:minHeight="160dp" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/device_filter" />
+        </activity>
+
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:label="@string/settings_title" />
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+
+</manifest>

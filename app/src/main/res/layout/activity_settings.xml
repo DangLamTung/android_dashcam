@@ -1,0 +1,431 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/hud_bg"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="24dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/settings_title"
+            android:textColor="@color/hud_accent"
+            android:textSize="24sp"
+            android:textStyle="bold"
+            android:fontFamily="monospace" />
+
+        <!-- HUD overlay -->
+        <Switch
+            android:id="@+id/swGrid"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="@string/settings_grid"
+            android:textColor="@color/hud_text_primary" />
+
+        <Switch
+            android:id="@+id/swNight"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/settings_night"
+            android:textColor="@color/hud_text_primary" />
+
+        <Switch
+            android:id="@+id/swMirror"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/settings_mirror"
+            android:textColor="@color/hud_text_primary" />
+
+        <Switch
+            android:id="@+id/swRecordOverlay"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Record Bounding Boxes on Video"
+            android:textColor="@color/hud_text_primary" />
+
+        <!-- Camera Source Selection -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="Camera Source"
+            android:textColor="@color/hud_accent"
+            android:textStyle="bold" />
+
+        <RadioGroup
+            android:id="@+id/rgCameraSource"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <RadioButton
+                android:id="@+id/rbCamUsb"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="USB Camera (UVC)"
+                android:textColor="@color/hud_text_primary" />
+
+            <RadioButton
+                android:id="@+id/rbCamSystem"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="System Camera (Built-in)"
+                android:textColor="@color/hud_text_primary" />
+
+            <RadioButton
+                android:id="@+id/rbCamWifi"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="WiFi / IP Camera (RTSP / HTTP MJPEG)"
+                android:textColor="@color/hud_text_primary" />
+        </RadioGroup>
+
+        <!-- System Camera Lens Option -->
+        <RadioGroup
+            android:id="@+id/rgSystemFacing"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="24dp"
+            android:layout_marginTop="4dp"
+            android:orientation="horizontal">
+
+            <RadioButton
+                android:id="@+id/rbLensBack"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Rear Lens"
+                android:textColor="@color/hud_text_secondary" />
+
+            <RadioButton
+                android:id="@+id/rbLensFront"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="16dp"
+                android:text="Front Lens"
+                android:textColor="@color/hud_text_secondary" />
+        </RadioGroup>
+
+        <!-- WiFi Stream URL Input -->
+        <TextView
+            android:id="@+id/tvWifiUrlLabel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="WiFi Stream URL (RTSP or HTTP MJPEG):"
+            android:textColor="@color/hud_text_secondary"
+            android:textSize="12sp" />
+
+        <EditText
+            android:id="@+id/etWifiUrl"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="rtsp://192.168.1.100:554/live or http://..."
+            android:textColor="@color/hud_text_primary"
+            android:textColorHint="@color/hud_text_secondary"
+            android:textSize="14sp"
+            android:inputType="textUri" />
+
+        <!-- Preview resolution -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/settings_resolution"
+            android:textColor="@color/hud_accent"
+            android:textStyle="bold" />
+
+        <RadioGroup
+            android:id="@+id/rgResolution"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <RadioButton
+                android:id="@+id/rb360"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_res_360"
+                android:textColor="@color/hud_text_primary" />
+
+            <RadioButton
+                android:id="@+id/rb480"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_res_480"
+                android:textColor="@color/hud_text_primary" />
+
+            <RadioButton
+                android:id="@+id/rb544"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_res_544"
+                android:textColor="@color/hud_text_primary" />
+
+            <RadioButton
+                android:id="@+id/rb720"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_res_720"
+                android:textColor="@color/hud_text_primary" />
+
+            <RadioButton
+                android:id="@+id/rb1080"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_res_1080"
+                android:textColor="@color/hud_text_primary" />
+        </RadioGroup>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/settings_resolution_hint"
+            android:textColor="@color/hud_text_secondary"
+            android:textSize="11sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="@string/settings_framerate"
+            android:textColor="@color/hud_accent"
+            android:textStyle="bold" />
+
+        <RadioGroup
+            android:id="@+id/rgFps"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <RadioButton
+                android:id="@+id/rbFps15"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_fps_15"
+                android:textColor="@color/hud_text_primary" />
+
+            <RadioButton
+                android:id="@+id/rbFps20"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_fps_20"
+                android:textColor="@color/hud_text_primary" />
+
+            <RadioButton
+                android:id="@+id/rbFps30"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_fps_30"
+                android:textColor="@color/hud_text_primary" />
+        </RadioGroup>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/settings_framerate_hint"
+            android:textColor="@color/hud_text_secondary"
+            android:textSize="11sp" />
+
+        <!-- ONNX detection -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/settings_detection"
+            android:textColor="@color/hud_accent"
+            android:textStyle="bold" />
+
+        <Switch
+            android:id="@+id/swDetect"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/settings_detect_on"
+            android:textColor="@color/hud_text_primary" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="@string/settings_confidence"
+            android:textColor="@color/hud_text_primary" />
+
+        <SeekBar
+            android:id="@+id/sbConfidence"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:max="95" />
+
+        <TextView
+            android:id="@+id/tvConfidence"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/hud_text_secondary"
+            android:textSize="11sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="@string/settings_detect_rate"
+            android:textColor="@color/hud_text_primary" />
+
+        <RadioGroup
+            android:id="@+id/rgDetectRate"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <RadioButton
+                android:id="@+id/rbRate1"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_rate_1"
+                android:textColor="@color/hud_text_primary" />
+
+            <RadioButton
+                android:id="@+id/rbRate2"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_rate_2"
+                android:textColor="@color/hud_text_primary" />
+
+            <RadioButton
+                android:id="@+id/rbRate5"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_rate_5"
+                android:textColor="@color/hud_text_primary" />
+        </RadioGroup>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/settings_detect_rate_hint"
+            android:textColor="@color/hud_text_secondary"
+            android:textSize="11sp" />
+
+
+        <EditText
+            android:id="@+id/etModel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:hint="@string/settings_model_hint"
+            android:importantForAutofill="no"
+            android:textColor="@color/hud_text_primary"
+            android:textColorHint="@color/hud_text_secondary"
+            android:inputType="text" />
+
+        <!-- Ground-plane distance calibration: geometry instead of object detection. -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:text="@string/settings_calib"
+            android:textColor="@color/hud_text_primary"
+            android:textSize="15sp"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal">
+
+            <EditText
+                android:id="@+id/etCamHeight"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:hint="@string/settings_calib_height_hint"
+                android:importantForAutofill="no"
+                android:textColor="@color/hud_text_primary"
+                android:textColorHint="@color/hud_text_secondary"
+                android:textSize="13sp"
+                android:inputType="numberDecimal" />
+
+            <EditText
+                android:id="@+id/etCamPitch"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:hint="@string/settings_calib_pitch_hint"
+                android:importantForAutofill="no"
+                android:textColor="@color/hud_text_primary"
+                android:textColorHint="@color/hud_text_secondary"
+                android:textSize="13sp"
+                android:inputType="numberDecimal|numberSigned" />
+
+            <EditText
+                android:id="@+id/etCamFov"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:hint="@string/settings_calib_fov_hint"
+                android:importantForAutofill="no"
+                android:textColor="@color/hud_text_primary"
+                android:textColorHint="@color/hud_text_secondary"
+                android:textSize="13sp"
+                android:inputType="numberDecimal" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/settings_calib_hint"
+            android:textColor="@color/hud_text_secondary"
+            android:textSize="11sp" />
+
+        <Button
+            android:id="@+id/btnLiveCalib"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:backgroundTint="@color/hud_button_bg"
+            android:text="@string/settings_open_live_calib"
+            android:textColor="@color/hud_accent"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/settings_model_hint2"
+            android:textColor="@color/hud_text_secondary"
+            android:textSize="11sp" />
+
+        <!-- actions -->
+        <Button
+            android:id="@+id/btnSave"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:backgroundTint="@color/hud_accent"
+            android:text="@string/settings_save"
+            android:textColor="#001018"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnCancel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:backgroundTint="@color/hud_button_bg"
+            android:text="@string/settings_cancel"
+            android:textColor="@color/hud_text_primary" />
+    </LinearLayout>
+</ScrollView>

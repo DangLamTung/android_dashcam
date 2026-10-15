@@ -1,0 +1,809 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/rootContainer"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/hud_bg">
+
+    <!-- ==================== HOME (normal app) panel ==================== -->
+    <ScrollView
+        android:id="@+id/homePanel"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:fillViewport="true"
+        android:background="@color/hud_bg">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="24dp"
+            android:gravity="center_horizontal">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/app_name"
+                android:textColor="@color/hud_accent"
+                android:textSize="26sp"
+                android:textStyle="bold"
+                android:fontFamily="monospace" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="@string/home_subtitle"
+                android:textColor="@color/hud_text_secondary"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/tvHomeStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:background="#22000000"
+                android:padding="14dp"
+                android:text="@string/status_waiting_camera"
+                android:textColor="@color/hud_accent_warn"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:gravity="center" />
+
+            <TextView
+                android:id="@+id/tvHomeDetail"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:background="#11000000"
+                android:padding="10dp"
+                android:textColor="@color/hud_text_secondary"
+                android:textSize="12sp"
+                android:fontFamily="monospace"
+                android:gravity="center" />
+
+            <!-- Battery & Power Monitor -->
+            <LinearLayout
+                android:id="@+id/layoutBattery"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:background="#1A00E5FF"
+                android:orientation="vertical"
+                android:padding="12dp">
+
+                <TextView
+                    android:id="@+id/tvBatteryTitle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="⚡ BATTERY &amp; POWER DRAIN MONITOR"
+                    android:textColor="@color/hud_accent"
+                    android:textSize="12sp"
+                    android:textStyle="bold"
+                    android:fontFamily="monospace" />
+
+                <TextView
+                    android:id="@+id/tvBatteryInfo"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:textColor="@color/hud_text_primary"
+                    android:textSize="12sp"
+                    android:fontFamily="monospace"
+                    android:lineSpacingExtra="3dp"
+                    android:text="Sampling battery metrics..." />
+
+                <Button
+                    android:id="@+id/btnResetBattery"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:layout_marginTop="8dp"
+                    android:layout_gravity="end"
+                    android:backgroundTint="@color/hud_button_bg"
+                    android:text="Reset Session Drain"
+                    android:textColor="@color/hud_accent"
+                    android:textSize="11sp" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/btnStartHud"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:text="@string/btn_start_hud"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:backgroundTint="@color/hud_accent"
+                android:textColor="#001018" />
+
+            <Button
+                android:id="@+id/btnCalibration"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/btn_calibration_mode"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:backgroundTint="@color/hud_button_bg"
+                android:textColor="@color/hud_accent" />
+
+            <Button
+                android:id="@+id/btnSettings"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/btn_settings"
+                android:textSize="14sp"
+                android:backgroundTint="@color/hud_button_bg"
+                android:textColor="@color/hud_accent" />
+
+            <Button
+                android:id="@+id/btnScanUsb"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/btn_scan_usb"
+                android:textSize="14sp"
+                android:backgroundTint="@color/hud_button_bg"
+                android:textColor="@color/hud_text_primary" />
+
+            <Button
+                android:id="@+id/btnConnect"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/btn_connect"
+                android:textSize="14sp"
+                android:backgroundTint="@color/hud_button_bg"
+                android:textColor="@color/hud_text_primary" />
+
+            <Button
+                android:id="@+id/btnSaveLog"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/btn_save_log"
+                android:textSize="14sp"
+                android:backgroundTint="@color/hud_button_bg"
+                android:textColor="@color/hud_accent" />
+
+            <Button
+                android:id="@+id/btnCopyPath"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/btn_copy_log_path"
+                android:textSize="14sp"
+                android:backgroundTint="@color/hud_button_bg"
+                android:textColor="@color/hud_accent" />
+
+            <Button
+                android:id="@+id/btnBench"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/btn_benchmark"
+                android:textSize="14sp"
+                android:backgroundTint="@color/hud_button_bg"
+                android:textColor="@color/hud_accent" />
+
+            <TextView
+                android:id="@+id/tvLogPath"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:textColor="@color/hud_text_secondary"
+                android:textSize="11sp"
+                android:fontFamily="monospace"
+                android:gravity="center" />
+
+            <!-- USB device list output (from Scan & List) -->
+            <TextView
+                android:id="@+id/tvUsbList"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:background="#11000000"
+                android:padding="10dp"
+                android:textColor="@color/hud_text_secondary"
+                android:textSize="11sp"
+                android:fontFamily="monospace"
+                android:visibility="gone" />
+        </LinearLayout>
+    </ScrollView>
+
+    <!-- ==================== HUD (fullscreen) panel ==================== -->
+    <FrameLayout
+        android:id="@+id/hudPanel"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone">
+
+    <!-- Camera Video Rendering Surface -->
+    <com.driving.hud.usbcamera.ui.HudSurfaceView
+        android:id="@+id/cameraSurfaceView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_gravity="center" />
+
+    <!-- Driving HUD Guideline & Grid Overlay -->
+    <com.driving.hud.usbcamera.ui.HudOverlayView
+        android:id="@+id/hudOverlayView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- Top HUD Status Bar -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="16dp"
+        android:gravity="center_vertical">
+
+        <!-- Status indicator badge -->
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="#66000000"
+            android:paddingHorizontal="12dp"
+            android:paddingVertical="6dp"
+            android:textColor="@color/hud_accent_warn"
+            android:textStyle="bold"
+            android:textSize="14sp"
+            android:fontFamily="monospace"
+            android:text="@string/status_waiting_camera" />
+
+        <Space
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+
+        <!-- FPS and Stream Stats -->
+        <TextView
+            android:id="@+id/tvStats"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="#66000000"
+            android:paddingHorizontal="12dp"
+            android:paddingVertical="6dp"
+            android:textColor="@color/hud_accent"
+            android:textSize="14sp"
+            android:fontFamily="monospace"
+            android:text="FPS: 0 | 0x0" />
+    </LinearLayout>
+
+    <!-- Bottom HUD Quick Action Bar -->
+    <LinearLayout
+        android:id="@+id/controlBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:layout_marginBottom="20dp"
+        android:background="#80000000"
+        android:padding="8dp"
+        android:orientation="vertical">
+
+        <!--
+            Rows scroll horizontally: fillViewport keeps them centred when there is room, and
+            lets them slide instead of clipping when the window is narrow (split screen).
+        -->
+        <HorizontalScrollView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fillViewport="true"
+            android:scrollbars="none">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btnMirror"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="4dp"
+            android:backgroundTint="@color/hud_button_bg"
+            android:textColor="@color/hud_text_primary"
+            android:textSize="12sp"
+            android:text="@string/btn_mirror_hud" />
+
+        <Button
+            android:id="@+id/btnNightMode"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="4dp"
+            android:backgroundTint="@color/hud_button_bg"
+            android:textColor="@color/hud_text_primary"
+            android:textSize="12sp"
+            android:text="@string/btn_night_mode" />
+
+        <Button
+            android:id="@+id/btnGrid"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="4dp"
+            android:backgroundTint="@color/hud_button_bg"
+            android:textColor="@color/hud_text_primary"
+            android:textSize="12sp"
+            android:text="@string/btn_grid" />
+
+        <Button
+            android:id="@+id/btnHudCalib"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="4dp"
+            android:backgroundTint="@color/hud_button_bg"
+            android:textColor="@color/hud_accent"
+            android:textSize="12sp"
+            android:text="@string/btn_hud_calib" />
+
+        <Button
+            android:id="@+id/btnCameraSource"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="4dp"
+            android:backgroundTint="@color/hud_button_bg"
+            android:textColor="@color/hud_accent"
+            android:textSize="12sp"
+            android:text="CAM: USB" />
+
+        <Button
+            android:id="@+id/btnReconnect"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="4dp"
+            android:backgroundTint="@color/hud_button_bg"
+            android:textColor="@color/hud_accent_warn"
+            android:textSize="12sp"
+            android:text="@string/btn_reconnect" />
+
+        <Button
+            android:id="@+id/btnRec"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="4dp"
+            android:backgroundTint="@color/hud_button_bg"
+            android:textColor="@color/hud_accent"
+            android:textSize="12sp"
+            android:text="@string/btn_rec" />
+
+        <Button
+            android:id="@+id/btnPip"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="4dp"
+            android:backgroundTint="@color/hud_button_bg"
+            android:textColor="@color/hud_accent"
+            android:textSize="12sp"
+            android:text="@string/btn_pip" />
+
+        <Button
+            android:id="@+id/btnSplit"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="4dp"
+            android:backgroundTint="@color/hud_button_bg"
+            android:textColor="@color/hud_accent"
+            android:textSize="12sp"
+            android:text="@string/btn_split" />
+
+        <Button
+            android:id="@+id/btnLog"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="4dp"
+            android:backgroundTint="@color/hud_button_bg"
+            android:textColor="@color/hud_accent"
+            android:textSize="12sp"
+            android:text="@string/btn_log" />
+
+        <Button
+            android:id="@+id/btnToggleControls"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="4dp"
+            android:backgroundTint="@color/hud_button_bg"
+            android:textColor="@color/hud_accent"
+            android:textSize="12sp"
+            android:text="▼ HIDE" />
+
+        <Button
+            android:id="@+id/btnExitHud"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="4dp"
+            android:backgroundTint="@color/hud_button_bg"
+            android:textColor="@color/hud_text_secondary"
+            android:textSize="12sp"
+            android:text="@string/btn_exit_hud" />
+        </LinearLayout>
+        </HorizontalScrollView>
+
+        <!-- Focus row: hidden at runtime when the camera has no focus unit -->
+        <HorizontalScrollView
+            android:id="@+id/focusRow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fillViewport="true"
+            android:scrollbars="none">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnFocusNear"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginHorizontal="4dp"
+                android:backgroundTint="@color/hud_button_bg"
+                android:textColor="@color/hud_text_primary"
+                android:textSize="12sp"
+                android:enabled="false"
+                android:text="@string/btn_focus_near" />
+
+            <Button
+                android:id="@+id/btnFocusFar"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginHorizontal="4dp"
+                android:backgroundTint="@color/hud_button_bg"
+                android:textColor="@color/hud_text_primary"
+                android:textSize="12sp"
+                android:enabled="false"
+                android:text="@string/btn_focus_far" />
+
+            <Button
+                android:id="@+id/btnFocusAf"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginHorizontal="4dp"
+                android:backgroundTint="@color/hud_button_bg"
+                android:textColor="@color/hud_accent"
+                android:textSize="12sp"
+                android:enabled="false"
+                android:text="@string/btn_focus_af" />
+        </LinearLayout>
+        </HorizontalScrollView>
+    </LinearLayout>
+
+    <!-- ==================== CALIBRATION PANEL ==================== -->
+    <FrameLayout
+        android:id="@+id/calibrationPanel"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone">
+
+        <!-- Top Calibration Header & Live Status -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="12dp"
+            android:background="#D0001018">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:text="@string/calib_title"
+                    android:textColor="@color/hud_accent"
+                    android:textSize="15sp"
+                    android:textStyle="bold"
+                    android:fontFamily="monospace" />
+
+                <Button
+                    android:id="@+id/btnCalibExitTop"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:backgroundTint="@color/hud_button_bg"
+                    android:text="@string/calib_exit"
+                    android:textColor="@color/hud_accent_warn"
+                    android:textSize="11sp" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/tvCalibSummary"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:textColor="@color/hud_text_primary"
+                android:textSize="12sp"
+                android:fontFamily="monospace"
+                android:text="Pitch: 8.0° | Height: 1.20m | FOV: 65.0° | Focal: 1042px" />
+        </LinearLayout>
+
+        <!-- Bottom Calibration Controls Card -->
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:layout_marginBottom="12dp"
+            android:layout_marginHorizontal="12dp"
+            android:background="@drawable/bg_calib_card"
+            android:padding="12dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <!-- Pitch Row -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <TextView
+                        android:layout_width="120dp"
+                        android:layout_height="wrap_content"
+                        android:text="@string/calib_pitch_label"
+                        android:textColor="@color/hud_accent"
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
+
+                    <Button
+                        android:id="@+id/btnPitchMinus"
+                        android:layout_width="54dp"
+                        android:layout_height="36dp"
+                        android:padding="0dp"
+                        android:text="-0.5"
+                        android:textSize="10sp"
+                        android:backgroundTint="@color/hud_button_bg"
+                        android:textColor="@color/hud_text_primary" />
+
+                    <SeekBar
+                        android:id="@+id/sbPitch"
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:layout_height="wrap_content"
+                        android:max="350" />
+
+                    <Button
+                        android:id="@+id/btnPitchPlus"
+                        android:layout_width="54dp"
+                        android:layout_height="36dp"
+                        android:padding="0dp"
+                        android:text="+0.5"
+                        android:textSize="10sp"
+                        android:backgroundTint="@color/hud_button_bg"
+                        android:textColor="@color/hud_text_primary" />
+
+                    <TextView
+                        android:id="@+id/tvPitchVal"
+                        android:layout_width="56dp"
+                        android:layout_height="wrap_content"
+                        android:gravity="end"
+                        android:textColor="@color/hud_text_primary"
+                        android:textSize="12sp"
+                        android:fontFamily="monospace"
+                        android:text="8.0°" />
+                </LinearLayout>
+
+                <!-- Height Row -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <TextView
+                        android:layout_width="120dp"
+                        android:layout_height="wrap_content"
+                        android:text="@string/calib_height_label"
+                        android:textColor="@color/hud_accent"
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
+
+                    <Button
+                        android:id="@+id/btnHeightMinus"
+                        android:layout_width="54dp"
+                        android:layout_height="36dp"
+                        android:padding="0dp"
+                        android:text="-.05"
+                        android:textSize="10sp"
+                        android:backgroundTint="@color/hud_button_bg"
+                        android:textColor="@color/hud_text_primary" />
+
+                    <SeekBar
+                        android:id="@+id/sbHeight"
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:layout_height="wrap_content"
+                        android:max="250" />
+
+                    <Button
+                        android:id="@+id/btnHeightPlus"
+                        android:layout_width="54dp"
+                        android:layout_height="36dp"
+                        android:padding="0dp"
+                        android:text="+.05"
+                        android:textSize="10sp"
+                        android:backgroundTint="@color/hud_button_bg"
+                        android:textColor="@color/hud_text_primary" />
+
+                    <TextView
+                        android:id="@+id/tvHeightVal"
+                        android:layout_width="56dp"
+                        android:layout_height="wrap_content"
+                        android:gravity="end"
+                        android:textColor="@color/hud_text_primary"
+                        android:textSize="12sp"
+                        android:fontFamily="monospace"
+                        android:text="1.20m" />
+                </LinearLayout>
+
+                <!-- FOV Row -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <TextView
+                        android:layout_width="120dp"
+                        android:layout_height="wrap_content"
+                        android:text="@string/calib_fov_label"
+                        android:textColor="@color/hud_accent"
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
+
+                    <Button
+                        android:id="@+id/btnFovMinus"
+                        android:layout_width="54dp"
+                        android:layout_height="36dp"
+                        android:padding="0dp"
+                        android:text="-1°"
+                        android:textSize="10sp"
+                        android:backgroundTint="@color/hud_button_bg"
+                        android:textColor="@color/hud_text_primary" />
+
+                    <SeekBar
+                        android:id="@+id/sbFov"
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:layout_height="wrap_content"
+                        android:max="80" />
+
+                    <Button
+                        android:id="@+id/btnFovPlus"
+                        android:layout_width="54dp"
+                        android:layout_height="36dp"
+                        android:padding="0dp"
+                        android:text="+1°"
+                        android:textSize="10sp"
+                        android:backgroundTint="@color/hud_button_bg"
+                        android:textColor="@color/hud_text_primary" />
+
+                    <TextView
+                        android:id="@+id/tvFovVal"
+                        android:layout_width="56dp"
+                        android:layout_height="wrap_content"
+                        android:gravity="end"
+                        android:textColor="@color/hud_text_primary"
+                        android:textSize="12sp"
+                        android:fontFamily="monospace"
+                        android:text="65.0°" />
+                </LinearLayout>
+
+                <!-- Auto-Pitch Target Alignment Row -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Target Auto-Pitch:"
+                        android:textColor="@color/hud_text_secondary"
+                        android:textSize="11sp" />
+
+                    <RadioGroup
+                        android:id="@+id/rgRefDist"
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center">
+
+                        <RadioButton
+                            android:id="@+id/rbRef5m"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="5m"
+                            android:checked="true"
+                            android:textSize="11sp"
+                            android:textColor="@color/hud_text_primary" />
+
+                        <RadioButton
+                            android:id="@+id/rbRef10m"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:text="10m"
+                            android:textSize="11sp"
+                            android:textColor="@color/hud_text_primary" />
+
+                        <RadioButton
+                            android:id="@+id/rbRef15m"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:text="15m"
+                            android:textSize="11sp"
+                            android:textColor="@color/hud_text_primary" />
+                    </RadioGroup>
+
+                    <Button
+                        android:id="@+id/btnAutoPitch"
+                        android:layout_width="wrap_content"
+                        android:layout_height="36dp"
+                        android:backgroundTint="@color/hud_button_bg"
+                        android:text="@string/calib_auto_pitch_btn"
+                        android:textColor="@color/hud_accent"
+                        android:textSize="11sp" />
+                </LinearLayout>
+
+                <!-- Actions Row -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/btnCalibSave"
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:layout_height="wrap_content"
+                        android:backgroundTint="@color/hud_accent"
+                        android:text="@string/calib_save_apply"
+                        android:textColor="#001018"
+                        android:textStyle="bold" />
+
+                    <Button
+                        android:id="@+id/btnCalibReset"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="8dp"
+                        android:backgroundTint="@color/hud_button_bg"
+                        android:text="@string/calib_reset"
+                        android:textColor="@color/hud_text_secondary" />
+
+                    <Button
+                        android:id="@+id/btnCalibExit"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="8dp"
+                        android:backgroundTint="@color/hud_button_bg"
+                        android:text="@string/calib_exit"
+                        android:textColor="@color/hud_accent_warn" />
+                </LinearLayout>
+
+            </LinearLayout>
+        </ScrollView>
+
+    </FrameLayout>
+
+    </FrameLayout>
+
+</FrameLayout>
