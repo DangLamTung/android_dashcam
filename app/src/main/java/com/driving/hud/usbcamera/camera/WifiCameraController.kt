@@ -59,6 +59,13 @@ class WifiCameraController(
         }
     }
 
+    /**
+     * Starts the detector session before the stream is opened; see
+     * [DvrUsbCameraController.prewarmDetector] for why the wait is worth moving off the first
+     * frame. A no-op when detection is switched off in Settings.
+     */
+    fun prewarmDetector() = sink.prepare()
+
     fun open(url: String) {
         if (isOpen) close()
         sink.prepare()

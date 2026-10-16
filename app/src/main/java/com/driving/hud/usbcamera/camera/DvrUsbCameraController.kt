@@ -97,6 +97,14 @@ class DvrUsbCameraController(
 
     fun setOutputSurface(surface: Surface?) = sink.setOutputSurface(surface)
 
+    /**
+     * Starts the detector session before the DVR is opened. Even with the backend remembered
+     * from a previous run, creating the session costs seconds of native initialisation (model
+     * load, Vulkan pipelines); doing it now overlaps that with the home screen instead of with
+     * the first frame. A no-op when detection is switched off in Settings.
+     */
+    fun prewarmDetector() = sink.prepare()
+
     /** True when the DVR is attached and this app already holds USB access to it. */
     fun hasPermission(): Boolean {
         val usb = context.getSystemService(Context.USB_SERVICE) as? UsbManager ?: return false

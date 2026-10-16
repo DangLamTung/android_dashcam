@@ -225,11 +225,17 @@ class CameraCoordinator(
      * between boxes appearing with the first frame and boxes appearing several seconds later.
      */
     fun prewarmDetector() {
-        if (currentMode == HudPrefs.MODE_SYSTEM) {
-            systemController.prewarmDetector()
+        when (currentMode) {
+            HudPrefs.MODE_SYSTEM -> systemController.prewarmDetector()
+            // WiFi and the DVR share the JPEG sink, whose frame size is known up front, so their
+            // session can be built from onCreate. The remembered backend still costs seconds of
+            // native init, and starting it before the camera opens is the difference between
+            // boxes on the first frame and boxes several seconds later.
+            HudPrefs.MODE_WIFI -> wifiController.prewarmDetector()
+            HudPrefs.MODE_DVR -> dvrController.prewarmDetector()
+            // The UVC path builds its detector when the camera opens, where the negotiated frame
+            // size is known.
         }
-        // The USB and WiFi paths build theirs when the camera opens, where the negotiated frame
-        // size is known.
     }
 
     fun describeUsbDevices(): String {

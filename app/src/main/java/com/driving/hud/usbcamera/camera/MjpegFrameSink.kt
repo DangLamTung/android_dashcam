@@ -15,6 +15,7 @@ import com.driving.hud.usbcamera.util.HudPrefs
 import java.nio.ByteBuffer
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The JPEG-frame half of a camera source: decode -> draw to the HUD surface ->
@@ -36,8 +37,23 @@ class MjpegFrameSink(
     }
 
     private var outputSurface: Surface? = null
+
+    /** Built on the inference thread and read from the frame thread: must stay volatile. */
+    @Volatile
     private var detector: Detector? = null
+
     private var rec: MkvRecorder? = null
+
+    /**
+     * Bumped when the sink is torn down. Building a detector means measuring every backend,
+     * which takes seconds; without this a build that finishes after the source was closed would
+     * install a session for a camera that is already gone.
+     */
+    private val detectorGen = AtomicInteger(0)
+
+    /** True while a detector build is in flight, so it is never started twice. */
+    @Volatile
+    private var detectorBuilding = false
 
     private var frameW = DEFAULT_WIDTH
     private var frameH = DEFAULT_HEIGHT
@@ -74,19 +90,71 @@ class MjpegFrameSink(
         }
     }
 
-    /** Reads detection prefs and builds the detector for [width]x[height]. */
+    /** Reads detection prefs and starts building the detector for [width]x[height]. */
     fun prepare(width: Int = frameW, height: Int = frameH) {
         detectIntervalMs = HudPrefs.detectIntervalMs(context).toLong().coerceAtLeast(0L)
         setFrameSize(width, height)
         initDetector()
     }
 
+    /**
+     * Builds the detector on the inference thread, never inline.
+     *
+     * This is called from `open()`, which MainActivity runs on the UI thread, and a first build
+     * is a full backend shoot-out: it loads the ncnn graph (4.5 MB) **and** the ONNX model
+     * (9 MB), times every candidate and then rebuilds the winner. Measured on the tablet that is
+     * ~14 s of main-thread work with several native threads saturating every core, i.e. an ANR
+     * waiting for the first tap. The frame path treats a null detector as "no boxes yet".
+     */
     private fun initDetector() {
-        if (detector == null) {
+        // Same rule as the other sources: with detection switched off in Settings there is no
+        // point paying for the shoot-out or for a native session at all.
+        if (!HudPrefs.detect(context)) {
+            HudLogger.i(tag, "detection disabled in settings — running preview only")
+            return
+        }
+        if (detector != null || detectorBuilding) return
+
+        detectorBuilding = true
+        val gen = detectorGen.incrementAndGet()
+        val w = frameW
+        val h = frameH
+        val asset = HudPrefs.modelAsset(context)
+        // Reuse the backend measured for this model + frame size. Passing null here (as this
+        // path used to) re-ran the whole shoot-out on every single connect, so the model was
+        // loaded again and again for a result that never changes.
+        val cacheKey = "$asset@${w}x$h"
+        val cached = if (HudPrefs.detectProviderKey(context) == cacheKey) {
+            HudPrefs.detectProvider(context).takeIf { it.isNotBlank() }
+        } else {
+            null
+        }
+        if (cached != null) {
+            HudLogger.i(tag, "reusing detector backend '$cached' for $cacheKey (skipping benchmark)")
+        }
+        inferExecutor.execute {
             try {
-                detector = DetectorFactory.create(context, HudPrefs.modelAsset(context), frameW, frameH, null)
-            } catch (t: Throwable) {
-                HudLogger.w(tag, "Detector init failed: ${t.message}")
+                val built = try {
+                    DetectorFactory.create(context, asset, w, h, cached)
+                } catch (t: Throwable) {
+                    HudLogger.w(tag, "Detector init failed: ${t.message}")
+                    null
+                }
+                if (gen != detectorGen.get()) {
+                    HudLogger.i(tag, "discarding detector - source was closed during setup")
+                    try {
+                        built?.close()
+                    } catch (_: Throwable) {}
+                    return@execute
+                }
+                detector = built
+                if (built != null && cached == null) {
+                    val winner = DetectorFactory.activeBackend
+                    HudPrefs.setDetectProvider(context, winner, cacheKey)
+                    HudLogger.i(tag, "remembered detector backend '$winner' for $cacheKey")
+                }
+            } finally {
+                detectorBuilding = false
             }
         }
     }
@@ -135,7 +203,10 @@ class MjpegFrameSink(
         val isRecActive = recorder != null && recorder.isRecording
         val det = detector
         val now = System.currentTimeMillis()
-        val isDetDue = det != null && (detectIntervalMs <= 0 || now - lastInferAt >= detectIntervalMs) && !busy.get()
+        // Re-read the switch per frame so turning detection off in Settings actually stops the
+        // inference instead of leaving it running at full rate on every JPEG source.
+        val isDetDue = det != null && HudPrefs.detect(context) &&
+            (detectIntervalMs <= 0 || now - lastInferAt >= detectIntervalMs) && !busy.get()
 
         if (isRecActive || isDetDue) {
             val nv21 = getOrFillNv21(bmp, w, h)
@@ -259,6 +330,8 @@ class MjpegFrameSink(
 
     fun destroy() {
         close()
+        // Invalidate an in-flight detector build so it cannot outlive the source.
+        detectorGen.incrementAndGet()
         try {
             detector?.close()
         } catch (_: Throwable) {
