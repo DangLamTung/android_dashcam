@@ -43,7 +43,17 @@ class DvrBot(
         /** Class-specific Bulk-Only Mass Storage Reset (bmRequestType 0x21, bRequest 0xFF). */
         const val BOT_RESET_REQUEST_TYPE = 0x21
         const val BOT_RESET_REQUEST = 0xFF
+
+        /**
+         * Minimum gap between BOT resets. On this DVR the class reset is answered with -1 and
+         * each of the three control requests costs ~400 ms, so resetting eagerly costs far more
+         * time than the desync it is meant to cure.
+         */
+        const val RESET_MIN_INTERVAL_MS = 1000L
     }
+
+    /** When the pipe was last reset, so recovery attempts cannot become the bottleneck. */
+    private var lastResetMs = 0L
 
     /** Last CSW status byte (0 = passed), -1 when the transfer never produced one. */
     @Volatile
@@ -95,15 +105,28 @@ class DvrBot(
      * begins, and the only way back per the spec is the class-specific Bulk-Only Mass Storage
      * Reset followed by CLEAR-FEATURE(HALT) on both endpoints. Without it every later command
      * fails until the DVR is physically unplugged.
+     *
+     * Rate limited, and the endpoint clears are skipped when the device rejects the reset
+     * request: this DVR answers the reset itself with -1, and two further failed control
+     * transfers would otherwise burn ~850 ms per retry. Callers only invoke this when the CSW is
+     * genuinely missing, never on a short-but-synchronised data phase.
      */
     fun resetPipe() {
-        try {
-            val rc = connection.controlTransfer(
+        val now = System.currentTimeMillis()
+        if (now - lastResetMs < RESET_MIN_INTERVAL_MS) return
+        lastResetMs = now
+        val rc = try {
+            connection.controlTransfer(
                 BOT_RESET_REQUEST_TYPE, BOT_RESET_REQUEST, 0, interfaceId, null, 0, timeoutMs,
             )
-            HudLogger.i(TAG, "BOT mass-storage reset -> $rc")
         } catch (t: Throwable) {
             HudLogger.w(TAG, "BOT reset request failed: ${t.message}")
+            -1
+        }
+        HudLogger.i(TAG, "BOT mass-storage reset -> $rc")
+        if (rc < 0) {
+            // Nothing to clear: the device did not accept the reset, so the halts are not ours.
+            return
         }
         clearHalt(outEndpoint)
         clearHalt(inEndpoint)
@@ -169,14 +192,19 @@ class DvrBot(
             if (n <= 0) break
             received += n
         }
-        if (received != length) {
-            HudLogger.w(TAG, "read10 stalled at $received/$length; resetting the BOT pipe")
-            lastStatus = -1
+        // Always consume the CSW, even when the data phase came up short: the device sends it
+        // either way (its residue field reports the shortfall), and leaving it in the pipe is
+        // exactly what desynchronises the *next* command. A short read is a normal race with the
+        // DVR rewriting the ring, not an error worth resetting the pipe for.
+        lastStatus = readCsw()
+        if (lastStatus < 0) {
             resetPipe()
             return -1
         }
-        lastStatus = readCsw()
-        if (lastStatus < 0) resetPipe()
+        if (received != length) {
+            HudLogger.w(TAG, "read10 short: $received/$length (status=$lastStatus)")
+            return -1
+        }
         return length
     }
 
@@ -205,14 +233,16 @@ class DvrBot(
             if (n <= 0) break
             sent += n
         }
-        if (sent != length) {
-            HudLogger.w(TAG, "write10 stalled at $sent/$length; resetting the BOT pipe")
-            lastStatus = -1
+        // Same rule as read10Into: the CSW has to be consumed whatever the data phase did.
+        lastStatus = readCsw()
+        if (lastStatus < 0) {
             resetPipe()
             return false
         }
-        lastStatus = readCsw()
-        if (lastStatus < 0) resetPipe()
+        if (sent != length) {
+            HudLogger.w(TAG, "write10 short: $sent/$length (status=$lastStatus)")
+            return false
+        }
         return lastStatus == 0
     }
 

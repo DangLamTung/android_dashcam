@@ -52,6 +52,12 @@ class DvrUsbCameraController(
         /** Polls without a frame before the session is abandoned; a replug or mode change retries. */
         const val STALL_GIVE_UP_POLLS = 60
 
+        /** How long to wait before another self-repair attempt when re-claiming failed. */
+        const val RECLAIM_RETRY_MS = 1500L
+
+        /** A permanently dead DVR must not keep painting the UI red. */
+        const val MAX_REPORTED_RECLAIMS = 2
+
         /** How long open() waits for a previous session to finish releasing the interface. */
         const val PREVIOUS_SESSION_JOIN_MS = 800L
 
@@ -227,43 +233,11 @@ class DvrUsbCameraController(
             DvrUsbProbe.requestPermission(context)
             return
         }
-        val conn = usb.openDevice(device)
-        if (conn == null) {
-            listener.onError("Cannot open the U2 DVR (openDevice returned null)")
-            return
-        }
-        val iface = device.getInterface(0)
-        if (!conn.claimInterface(iface, true)) {
-            HudLogger.e(TAG, "claimInterface failed", null)
-            conn.close()
-            listener.onError("U2 DVR: cannot claim its USB interface")
-            return
-        }
-        val endpoints = (0 until iface.endpointCount).map { iface.getEndpoint(it) }
-        val inEp = endpoints.firstOrNull { it.direction == UsbConstants.USB_DIR_IN }
-        val outEp = endpoints.firstOrNull { it.direction == UsbConstants.USB_DIR_OUT }
-        if (inEp == null || outEp == null) {
-            conn.releaseInterface(iface)
-            conn.close()
-            listener.onError("U2 DVR: missing bulk endpoints")
-            return
-        }
-
-        connection = conn
-        inEndpoint = inEp
-        outEndpoint = outEp
-        bot = DvrBot(conn, outEp, inEp, iface.id, STREAM_TIMEOUT_MS)
-        sink.prepare()
-        isOpen = true
-        slotLba = -1
-        lastFrameHash = 0
-        stalePolls = 0
-        framesDelivered = 0
-        lastFrameBytes = 0
+        if (!claimStreaming(usb, device)) return
 
         listener.onConnected(device)
         listener.onStatusChanged("U2 DVR: starting video stream")
-        HudLogger.i(TAG, "claimed interface ${iface.id}; starting BOT stream reader")
+        HudLogger.i(TAG, "claimed interface 0; starting BOT stream reader")
 
         running = true
         thread = Thread({ streamLoop() }, "dvr-stream").apply {
@@ -272,10 +246,74 @@ class DvrUsbCameraController(
         }
     }
 
+    /**
+     * Opens the device and claims its mass-storage interface, leaving [bot] ready to read frames.
+     * Failures are reported to the listener here; the return value says whether to start reading.
+     */
+    private fun claimStreaming(usb: UsbManager, device: android.hardware.usb.UsbDevice): Boolean {
+        val conn = usb.openDevice(device)
+        if (conn == null) {
+            listener.onError("Cannot open the U2 DVR (openDevice returned null)")
+            return false
+        }
+        val iface = device.getInterface(0)
+        if (!conn.claimInterface(iface, true)) {
+            HudLogger.e(TAG, "claimInterface failed", null)
+            conn.close()
+            listener.onError("U2 DVR: cannot claim its USB interface")
+            return false
+        }
+        val endpoints = (0 until iface.endpointCount).map { iface.getEndpoint(it) }
+        val inEp = endpoints.firstOrNull { it.direction == UsbConstants.USB_DIR_IN }
+        val outEp = endpoints.firstOrNull { it.direction == UsbConstants.USB_DIR_OUT }
+        if (inEp == null || outEp == null) {
+            conn.releaseInterface(iface)
+            conn.close()
+            listener.onError("U2 DVR: missing bulk endpoints")
+            return false
+        }
+        synchronized(releaseLock) {
+            connection = conn
+            inEndpoint = inEp
+            outEndpoint = outEp
+            bot = DvrBot(conn, outEp, inEp, iface.id, STREAM_TIMEOUT_MS)
+        }
+        sink.prepare()
+        isOpen = true
+        slotLba = -1
+        lastFrameHash = 0
+        stalePolls = 0
+        framesDelivered = 0
+        lastFrameBytes = 0
+        lastFailedLocateMs = 0L
+        return true
+    }
+
+    /**
+     * Releases the interface and claims it again. Measured behaviour of this DVR: once it stops
+     * answering, only a fresh claim brings the video back - a replug is not needed - so the reader
+     * repairs itself instead of leaving the HUD dead until the user switches source.
+     */
+    private fun reclaim(): Boolean {
+        if (!running) return false
+        HudLogger.w(TAG, "re-claiming the DVR interface after a stall")
+        releaseStreaming()
+        val usb = context.getSystemService(Context.USB_SERVICE) as? UsbManager ?: return false
+        val device = DvrUsbProbe.findDevice(context) ?: return false
+        if (!usb.hasPermission(device)) return false
+        if (!claimStreaming(usb, device)) {
+            HudLogger.w(TAG, "re-claim failed")
+            return false
+        }
+        listener.onStatusChanged("U2 DVR: streaming")
+        HudLogger.i(TAG, "interface re-claimed; resuming the stream")
+        return true
+    }
+
     private fun streamLoop() {
         var announced = false
         var misses = 0
-        var gaveUp = false
+        var reclaims = 0
         try {
             while (running) {
                 val frame = readFrame()
@@ -290,10 +328,20 @@ class DvrUsbCameraController(
                     if (misses == STALL_REPORT_POLLS) {
                         HudLogger.w(TAG, "no frame for $misses polls")
                         listener.onStatusChanged("U2 DVR: no video (check the DVR and USB mode)")
-                    } else if (misses >= STALL_GIVE_UP_POLLS && !gaveUp) {
-                        gaveUp = true
-                        HudLogger.e(TAG, "no video for $misses polls", null)
-                        listener.onError("U2 DVR stopped sending video")
+                    } else if (misses >= STALL_GIVE_UP_POLLS) {
+                        reclaims++
+                        if (reclaims <= MAX_REPORTED_RECLAIMS) {
+                            HudLogger.e(TAG, "no video for $misses polls", null)
+                            listener.onError("U2 DVR stopped sending video")
+                        }
+                        // A fresh claim is what brings this DVR back, so try it here rather than
+                        // leaving the user to switch camera source and back.
+                        if (reclaim()) {
+                            misses = 0
+                            announced = false
+                        } else {
+                            Thread.sleep(RECLAIM_RETRY_MS)
+                        }
                     }
                     Thread.sleep(if (misses >= STALL_GIVE_UP_POLLS) 500 else 60)
                     continue
@@ -303,7 +351,7 @@ class DvrUsbCameraController(
                     announced = false
                 }
                 misses = 0
-                gaveUp = false
+                reclaims = 0
                 if (!announced) {
                     sink.setFrameSize(1280, 720)
                     listener.onStatusChanged("U2 DVR: streaming")
