@@ -6,25 +6,12 @@ A high-performance, fault-tolerant Android application and Heads-Up Display (HUD
 
 ## 🎬 Demo
 
-This clip is a real **1280×720** recording made *by the app itself* from a **U2 DVR dashcam**
+   **1280×720** recording made *by the app* from a **U2 DVR dashcam**
 (camera source = *U2 DVR*), with the detection boxes, distances and TTC burned into the frames —
-`BOTTLE`, `CUP` and `DINING TABLE` detections, plus the DVR's own clock/speed OSD in the corner.
-Those OSD characters are **cyan**, not magenta — that is the colour pipeline being correct
-(see *True-Color Chroma Pipeline* below):
+  
 
 ![Driving HUD demo — U2 DVR 720p with burned-in detections](docs/media/demo-u2-dvr-preview.gif)
 
-| File | What it is |
-| :--- | :--- |
-| [`docs/media/demo-u2-dvr-preview.gif`](docs/media/demo-u2-dvr-preview.gif) | 6 s silent preview, 520 px wide, for viewing inline (2.5 MB) |
-| [`docs/media/demo-u2-dvr-720p.mp4`](docs/media/demo-u2-dvr-720p.mp4) | Full 10 s clip, H.264 in MP4 for in-browser playback |
-| [`docs/media/demo-u2-dvr-720p.mkv`](docs/media/demo-u2-dvr-720p.mkv) | The unmodified file the app wrote: hardware H.264 in Matroska, exactly as it came off the device |
-
-> **Why 720p?** Because that is what this DVR streams. The U2 DVR does not serve a 1080p live
-> feed on any path the app can reach: over USB its removable 2 GB FAT volume only holds a single
-> *static* preview JPEG (`VSFILE`), and in video mode it emits 1280×720 MJPEG only. The vendor app
-> never even asks for another size — it issues `getResolution` (cmd `0x2F`) at connect but never
-> `setResolution` (cmd `0x0F`).
 
 ---
 
@@ -34,7 +21,7 @@ Those OSD characters are **cyan**, not magenta — that is the colour pipeline b
 - **YOLOv10n Neural Network**: Real-time object detection for vehicles (`car`, `truck`, `bus`, `motorcycle`) and pedestrians.
 - **NCNN Acceleration Engine**: Highly optimized native ARM64 NEON and Vulkan compute pipeline (`libncnn.so`) yielding ultra-low inference latency (~15–25ms on modern Android chipsets).
 - **Dual Inference Backends**:
-  - **NCNN** (Default / High performance): `yolov10n_224.ncnn` (224×224) and `yolov10n_320.ncnn` (320×320).
+  - **NCNN** (Default): `yolov10n_224.ncnn` (224×224) and `yolov10n_320.ncnn` (320×320).
   - **ONNX Runtime**: `yolov10n-224.onnx`, `yolov10n-320.onnx`, and pruned variants.
 - **Fused Ground-Plane & Pinhole Distance Estimation**: Fuses ground-plane camera pitch geometry ($Z_g = \frac{h_c}{\tan(\theta_{pitch} + \alpha_y)}$) with real-world 3D object size priors ($Z_p = \frac{f_y \cdot H_{real}}{h_{px}}$) to calculate accurate distances and Time-To-Collision (TTC).
 - **Interactive Calibration Wizard**: On-screen horizon line calibration, camera mounting height ($h_c$), vertical FOV adjustment, and automatic vanishing-point pitch solver.
@@ -79,20 +66,7 @@ just compiled against. "Verified" means we saw frames on screen and in a recorde
 | **Tablet built-in camera** (rear + front) | Camera2 / CSI | Preview and `YUV_420_888` analysis expose *different* size lists; a session only configures on the **intersection** (e.g. preview offers 1920×1080 while analysis stops at 1280×720). Superseded sessions still deliver `onConfigured`, so callbacks are generation-checked | ✅ **Working** — *System* source |
 | **WiFi / IP camera** | RTSP or HTTP | RTSP via `MediaPlayer`; HTTP **MJPEG** streams fed through the same JPEG sink as the DVR | ✅ **Working** — *WiFi* source |
 | **Host: Lenovo TB331FC** tablet, Android 13 (SDK 33), arm64-v8a, 7,000 mAh | — | The device every result above was verified on (PiP, recording, detection all live here) | ✅ |
-| **Host: itel P663LN** phone, Android 13 (SDK 33), Unisoc/Transsion | — | **Unsupported host**: no `video/mjpeg` MediaCodec at all (`NAME_NOT_FOUND`), `openDevice` returns null intermittently, and isochronous host transfers never delivered a single byte. The same UVC camera works on the Lenovo | ⚠️ Documented limitation |
 
-**Operational notes learned the hard way**
-- The U2 DVR's own app (`com.fvision.camera`) force-claims the interface and detaches `usb-storage`
-  (the volume vanishes and the device flaps every ~23 s). Disable it before using DVR mode:
-  `adb shell pm disable-user --user 0 com.fvision.camera`.
-- The DVR's volume UUID changes on every insert, and `/storage/<uuid>` is not readable from `adb`
-  (media_rw group, `fmask=0007`).
-- Android 13 refuses to show the USB permission dialog for a **UVC** device unless the app already
-  holds the `CAMERA` runtime permission.
-- Android 13 large-screen launchers ship their *own* USB camera app (`com.shenyaocn.android.usbcamera`)
-  that holds the camera and makes `openDevice` return null — `pm disable-user` it too.
-
----
 
 ## �🔋 Real-World Battery & Power Benchmarks
 
