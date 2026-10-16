@@ -137,6 +137,16 @@ internal class MkvRecorder(private val context: Context) {
     private var width = 0
     private var height = 0
     private var stride = 0
+
+    /**
+     * Chroma order of the buffers handed to [submit].
+     *
+     * The app's own conversions ([com.driving.hud.usbcamera.camera.MjpegFrameSink],
+     * `SystemCameraController.yuv420ToNv21`) produce **NV21** (V first), while MediaCodec's
+     * `COLOR_FormatYUV420SemiPlanar` wants **NV12** (U first). Feeding NV21 straight through swaps
+     * red and blue in the recording, so NV21 sources are converted by default.
+     */
+    private var sourceIsNv21 = false
     private var sliceHeight = 0
     private var fps = 30
     private var frameIndex = 0L
@@ -147,11 +157,12 @@ internal class MkvRecorder(private val context: Context) {
     /** Pooled NV12 scratch, reused per frame (never allocated on the hot path). */
     private var nv12 = ByteArray(0)
 
-    fun start(width: Int, height: Int, fps: Int): File? {
+    fun start(width: Int, height: Int, fps: Int, sourceIsNv21: Boolean = false): File? {
         if (isRecording) return outputFile
         if (width <= 0 || height <= 0) return null
         this.width = width
         this.height = height
+        this.sourceIsNv21 = sourceIsNv21
         this.fps = if (fps > 0) fps else 30
         droppedFrames = 0
         frameIndex = 0
@@ -380,7 +391,9 @@ internal class MkvRecorder(private val context: Context) {
 
     /** Converts and aligns camera buffer with encoder format, respecting user chroma preference. */
     private fun convertToNv12(nv21: ByteArray) {
-        val swap = HudPrefs.swapRecordChroma(context)
+        // Default: swap when the source is NV21 (the app's own convention) and when the user asked
+        // for the opposite (OEM encoders that disagree).
+        val swap = HudPrefs.swapRecordChroma(context) != sourceIsNv21
         convertChroma(nv21, nv12, width, height, stride, sliceHeight, swap)
     }
 

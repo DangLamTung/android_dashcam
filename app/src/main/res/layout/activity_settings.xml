@@ -96,6 +96,13 @@
                 android:layout_height="wrap_content"
                 android:text="WiFi / IP Camera (RTSP / HTTP MJPEG)"
                 android:textColor="@color/hud_text_primary" />
+
+            <RadioButton
+                android:id="@+id/rbCamDvr"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="U2 DVR Dashcam (USB mass-storage / Buildwin)"
+                android:textColor="@color/hud_text_primary" />
         </RadioGroup>
 
         <!-- System Camera Lens Option -->

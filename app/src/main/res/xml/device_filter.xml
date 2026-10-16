@@ -3,4 +3,11 @@
     <!-- Filter for standard USB Video Class (UVC) devices: Class 14 (0x0E) -->
     <usb-device class="14" />
     <usb-device class="239" subclass="2" /> <!-- Miscellaneous / Common Class Video -->
+    <!--
+        The "U2 DVR" (Buildwin / Huiying) dashcam is a mass-storage device, not a
+        camera. It is listed here so Android can grant this app USB access to it for
+        the diagnostic probe; its volume must otherwise be left to the kernel's
+        usb-storage driver, or the DVR's preview file disappears.
+    -->
+    <usb-device vendor-id="6402" product-id="12865" />
 </resources>

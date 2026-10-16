@@ -2,6 +2,7 @@ package com.driving.hud.usbcamera
 
 import com.driving.hud.usbcamera.alert.ClosingRateFilter
 import com.driving.hud.usbcamera.calib.GroundPlaneCalibration
+import com.driving.hud.usbcamera.camera.DvrFrameParser
 import com.driving.hud.usbcamera.record.H264AnnexB
 import com.driving.hud.usbcamera.ui.VideoFit
 import org.junit.Assert.assertEquals
@@ -358,5 +359,171 @@ class HudUnitTests {
         )
         assertEquals(640, w)
         assertEquals(480, h)
+    }
+
+    /**
+     * Regression for the system-camera black preview: the preview (SurfaceHolder) and analysis
+     * (YUV_420_888) streams advertise different size lists. Sizing the analysis ImageReader from
+     * the preview list alone asks for a surface the device cannot produce, the combined session
+     * fails to configure, and no video appears.
+     */
+    @Test
+    fun testSystemCameraPrefersSizeSupportedByBothStreams() {
+        // A device that can preview 1080p but only analyse up to 720p — a common layout.
+        val preview = listOf(1920 to 1080, 1280 to 720, 640 to 480)
+        val analysis = listOf(1280 to 720, 640 to 480)
+
+        val usable = com.driving.hud.usbcamera.camera.SystemCameraController
+            .commonOutputSizes(preview, analysis)
+        assertNotNull(usable)
+        assertEquals(listOf(1280 to 720, 640 to 480), usable)
+
+        // Asking for 1080p must therefore land on 720p, never on the preview-only 1920x1080.
+        val (w, h) = com.driving.hud.usbcamera.camera.SystemCameraController.chooseOptimalDimension(
+            primaryChoices = usable,
+            fallbackChoices = null,
+            targetW = 1920,
+            targetH = 1080
+        )
+        assertEquals(1280, w)
+        assertEquals(720, h)
+    }
+
+    @Test
+    fun testSystemCameraCommonSizesWhenListsDisagreeCompletely() {
+        val usable = com.driving.hud.usbcamera.camera.SystemCameraController
+            .commonOutputSizes(listOf(1920 to 1080), listOf(640 to 480))
+        assertNotNull(usable)
+        assertTrue(usable!!.isEmpty())
+    }
+
+    @Test
+    fun testSystemCameraCommonSizesWithoutCapabilities() {
+        // No stream configuration map: the caller falls back to the requested size.
+        assertNull(
+            com.driving.hud.usbcamera.camera.SystemCameraController
+                .commonOutputSizes(null, listOf(1280 to 720))
+        )
+        assertNull(
+            com.driving.hud.usbcamera.camera.SystemCameraController
+                .commonOutputSizes(emptyList(), emptyList())
+        )
+    }
+
+    // ---------------------------------------------------------------- U2 DVR
+
+    /** Builds a slot exactly the way the DVR lays it out: header, then one JPEG. */
+    private fun dvrSlot(framePayload: ByteArray, frameSizeField: Int? = null, magic: Boolean = true): ByteArray {
+        val slot = ByteArray(DvrFrameParser.FRAME_OFFSET + framePayload.size + 64)
+        if (magic) {
+            // 00 08 00 00, then the offset hint, then the frame size at offset 12.
+            slot[1] = 0x08
+            slot[6] = 0x22
+            slot[7] = 0x00.toByte()
+        }
+        val size = frameSizeField ?: framePayload.size
+        slot[12] = (size and 0xFF).toByte()
+        slot[13] = ((size shr 8) and 0xFF).toByte()
+        slot[14] = ((size shr 16) and 0xFF).toByte()
+        slot[15] = ((size shr 24) and 0xFF).toByte()
+        System.arraycopy(framePayload, 0, slot, DvrFrameParser.FRAME_OFFSET, framePayload.size)
+        return slot
+    }
+
+    @Test
+    fun testDvrSlotHeaderDetection() {
+        val jpeg = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte(), 0xFF.toByte(), 0xD9.toByte())
+        assertTrue(DvrFrameParser.looksLikeSlotHeader(dvrSlot(jpeg)))
+        // A zeroed 512 KB region is what the ring shows between writes.
+        assertTrue(!DvrFrameParser.looksLikeSlotHeader(ByteArray(512 * 1024)))
+        // Garbage without the magic is not a slot even if it happens to contain a JPEG.
+        assertTrue(!DvrFrameParser.looksLikeSlotHeader(dvrSlot(jpeg, magic = false)))
+        // Too short to hold a header at all.
+        assertTrue(!DvrFrameParser.looksLikeSlotHeader(ByteArray(1024)))
+    }
+
+    @Test
+    fun testDvrFrameExtractionUsesJpegMarkersNotHeaderFields() {
+        val payload = byteArrayOf(
+            0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte(), 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46,
+            0x11, 0x22, 0x33, 0xFF.toByte(), 0xD9.toByte()
+        )
+        // Deliberately wrong size field: the markers must win.
+        val slot = dvrSlot(payload, frameSizeField = 4096)
+        val frame = DvrFrameParser.extractFrame(slot)
+        assertEquals(payload.size, frame!!.size)
+        assertEquals(0xFF, frame[0].toInt() and 0xFF)
+        assertEquals(0xD8, frame[1].toInt() and 0xFF)
+        assertEquals(0xD9, frame[frame.size - 1].toInt() and 0xFF)
+        assertEquals(DvrFrameParser.FRAME_OFFSET, DvrFrameParser.firstSoi(slot))
+    }
+
+    @Test
+    fun testDvrFrameExtractionRejectsIncompleteFrames() {
+        // SOI but no EOI: the DVR is mid-write, so the frame must be dropped.
+        val truncated = ByteArray(DvrFrameParser.FRAME_OFFSET + 4096)
+        System.arraycopy(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte()), 0, truncated, DvrFrameParser.FRAME_OFFSET, 3)
+        assertNull(DvrFrameParser.extractFrame(truncated))
+        assertNull(DvrFrameParser.extractFrame(ByteArray(512 * 1024)))
+    }
+
+    // ------------------------------------------------------- recording chroma
+
+    @Test
+    fun testRecorderChromaConversionMatchesEncoderOrder() {
+        val w = 4
+        val h = 2
+        val ySize = w * h
+        val uvBytes = w * h / 2
+        // NV21 source: Y plane, then interleaved V,U.
+        val src = ByteArray(ySize + uvBytes)
+        for (i in 0 until ySize) src[i] = 0x40
+        src[ySize] = 111 // V0
+        src[ySize + 1] = 22 // U0
+        src[ySize + 2] = 33 // V1
+        src[ySize + 3] = 44 // U1
+
+        // swap = true turns the app's NV21 into the NV12 MediaCodec wants (U first).
+        val nv12 = ByteArray(ySize + uvBytes)
+        com.driving.hud.usbcamera.record.MkvRecorder.convertChroma(src, nv12, w, h, w, h, true)
+        assertEquals(22, nv12[ySize].toInt() and 0xFF)
+        assertEquals(111, nv12[ySize + 1].toInt() and 0xFF)
+        assertEquals(44, nv12[ySize + 2].toInt() and 0xFF)
+        assertEquals(33, nv12[ySize + 3].toInt() and 0xFF)
+
+        // swap = false is the straight copy used for buffers that already match the encoder.
+        val copied = ByteArray(ySize + uvBytes)
+        com.driving.hud.usbcamera.record.MkvRecorder.convertChroma(src, copied, w, h, w, h, false)
+        assertEquals(111, copied[ySize].toInt() and 0xFF)
+        assertEquals(22, copied[ySize + 1].toInt() and 0xFF)
+    }
+
+    @Test
+    fun testRecorderChromaConversionPadsStride() {
+        val w = 4
+        val h = 2
+        val stride = 8
+        val sliceHeight = h
+        val src = ByteArray(w * h + w * h / 2)
+        src[w * h] = 111
+        src[w * h + 1] = 22
+        val dst = ByteArray(stride * sliceHeight + stride * sliceHeight / 2)
+        com.driving.hud.usbcamera.record.MkvRecorder.convertChroma(src, dst, w, h, stride, sliceHeight, true)
+        // Chroma rows are padded to the stride, so the U/V pair lands at the row start.
+        assertEquals(22, dst[stride * sliceHeight].toInt() and 0xFF)
+        assertEquals(111, dst[stride * sliceHeight + 1].toInt() and 0xFF)
+        assertEquals(128, dst[stride * sliceHeight + w].toInt() and 0xFF) // padding byte
+    }
+
+    @Test
+    fun testDvrReadBlocksAndSizeHint() {
+        // 64504-byte frame at offset 8704 needs (8704 + 64504 + 1024) / 512 = 145 blocks.
+        assertEquals(145, DvrFrameParser.blocksFor(8704, 64504, 1024))
+        // Never more than the slot: 8704 + 600000 + 1024 would need 1191 blocks, capped to 1024.
+        assertEquals(1024, DvrFrameParser.blocksFor(8704, 600_000, 1024))
+        // Small but never zero: header fetch plus slack, even for an implausible header.
+        assertEquals(3, DvrFrameParser.blocksFor(0, 0, 1024))
+        val header = dvrSlot(ByteArray(2048), frameSizeField = 64504)
+        assertEquals(64504, DvrFrameParser.frameSizeHint(header))
     }
 }

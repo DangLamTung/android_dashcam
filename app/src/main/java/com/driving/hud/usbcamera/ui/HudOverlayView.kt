@@ -40,6 +40,49 @@ class HudOverlayView @JvmOverloads constructor(
     private var showGrid = true
     private var nightMode = false
 
+    /**
+     * Drawing scale. The overlay is authored for a 1920 px wide screen; the floating PiP window
+     * is around 430 px, where 36 px labels and 46 px alerts would collide with each other.
+     */
+    private var uiScale = 1f
+
+    /** PiP / very small window: keep boxes, distances and the alert; drop grid and readout. */
+    @Volatile
+    private var compact = false
+
+    fun setCompact(on: Boolean) {
+        if (compact == on) return
+        compact = on
+        postInvalidateOnAnimation()
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        // Keep labels readable rather than strictly proportional: 0.4 of 36 px is still legible
+        // in a 240 px tall floating window.
+        val scale = (w / 1920f).coerceIn(0.4f, 1f)
+        if (scale == uiScale) return
+        uiScale = scale
+        applyScale()
+    }
+
+    private fun applyScale() {
+        val s = uiScale
+        hudTextPaint.textSize = 36f * s
+        detTextPaint.textSize = 32f * s
+        calibTextPaint.textSize = 28f * s
+        calibBadgeTextPaint.textSize = 24f * s
+        telemetryPaint.textSize = 38f * s
+        alertTextPaint.textSize = 46f * s
+        gridPaint.strokeWidth = 2f * s
+        guidePaint.strokeWidth = 4f * s
+        boxPaint.strokeWidth = 5f * s
+        calibHorizonPaint.strokeWidth = 3f * s
+        calibLadderPaint.strokeWidth = 3f * s
+        calibReticlePaint.strokeWidth = 2.5f * s
+        telemetryPaint.setShadowLayer(6f * s, 0f, 0f, Color.BLACK)
+    }
+
     // ---- object detection overlay ---------------------------------------
     private val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.parseColor("#FFFFC400")
@@ -293,6 +336,15 @@ class HudOverlayView @JvmOverloads constructor(
         val w = width.toFloat()
         val h = height.toFloat()
 
+        if (compact && !calibrationMode) {
+            // Floating PiP window (~430 px wide): the grid, lane guides and the telemetry box are
+            // sized for a full-screen HUD, so at this size they cover the whole picture. Only the
+            // safety-critical drawing is kept - boxes with distances, and the alert banner.
+            drawDetections(canvas)
+            drawAlert(canvas, w, h)
+            return
+        }
+
         if (calibrationMode) {
             drawCalibration(canvas, w, h)
         }
@@ -306,20 +358,21 @@ class HudOverlayView @JvmOverloads constructor(
 
         if (!showGrid || calibrationMode) return
 
+        val s = uiScale
         val cx = w / 2f
         val cy = h / 2f
 
         // Center reticle / Horizon crosshair
-        canvas.drawLine(cx - 60f, cy, cx + 60f, cy, guidePaint)
-        canvas.drawLine(cx, cy - 40f, cx, cy + 40f, guidePaint)
+        canvas.drawLine(cx - 60f * s, cy, cx + 60f * s, cy, guidePaint)
+        canvas.drawLine(cx, cy - 40f * s, cx, cy + 40f * s, guidePaint)
 
         // Trajectory / Lane Guide Lines for Driving HUD
         trajectoryPath.reset()
         // Left lane guide
-        trajectoryPath.moveTo(cx - 80f, cy + 40f)
+        trajectoryPath.moveTo(cx - 80f * s, cy + 40f * s)
         trajectoryPath.lineTo(w * 0.15f, h)
         // Right lane guide
-        trajectoryPath.moveTo(cx + 80f, cy + 40f)
+        trajectoryPath.moveTo(cx + 80f * s, cy + 40f * s)
         trajectoryPath.lineTo(w * 0.85f, h)
 
         canvas.drawPath(trajectoryPath, guidePaint)
@@ -327,12 +380,12 @@ class HudOverlayView @JvmOverloads constructor(
         // Horizontal distance markers
         val y1 = cy + (h - cy) * 0.35f
         val y2 = cy + (h - cy) * 0.70f
-        canvas.drawLine(cx - 140f, y1, cx + 140f, y1, gridPaint)
-        canvas.drawLine(cx - 240f, y2, cx + 240f, y2, gridPaint)
+        canvas.drawLine(cx - 140f * s, y1, cx + 140f * s, y1, gridPaint)
+        canvas.drawLine(cx - 240f * s, y2, cx + 240f * s, y2, gridPaint)
 
         // HUD Corner Accents
-        val cornerSize = 40f
-        val pad = 30f
+        val cornerSize = 40f * s
+        val pad = 30f * s
         // Top-Left
         canvas.drawLine(pad, pad, pad + cornerSize, pad, gridPaint)
         canvas.drawLine(pad, pad, pad, pad + cornerSize, gridPaint)
@@ -406,34 +459,36 @@ class HudOverlayView @JvmOverloads constructor(
     private fun drawAlert(canvas: Canvas, w: Float, h: Float) {
         val text = alertText
         if (text.isEmpty()) return
+        val s = uiScale
         val tw = alertTextPaint.measureText(text)
-        val pad = 26f
+        val pad = 26f * s
         val top = h * 0.10f
-        alertRect.set((w - tw) / 2f - pad, top, (w + tw) / 2f + pad, top + 76f)
+        alertRect.set((w - tw) / 2f - pad, top, (w + tw) / 2f + pad, top + 76f * s)
         canvas.drawRoundRect(
-            alertRect, 16f, 16f,
+            alertRect, 16f * s, 16f * s,
             if (alertWarn) alertBgWarnPaint else alertBgCautionPaint
         )
-        canvas.drawText(text, (w - tw) / 2f, top + 52f, alertTextPaint)
+        canvas.drawText(text, (w - tw) / 2f, top + 52f * s, alertTextPaint)
     }
 
     private fun drawTelemetry(canvas: Canvas, h: Float) {
         val lines = telemetryLines
         if (lines.isEmpty()) return
 
-        val pad = 18f
-        val lineH = telemetryPaint.textSize + 14f
+        val s = uiScale
+        val pad = 18f * s
+        val lineH = telemetryPaint.textSize + 14f * s
         var maxW = 0f
         for (line in lines) maxW = maxOf(maxW, telemetryPaint.measureText(line))
 
         val boxH = lineH * lines.size + pad * 2
         val boxW = maxW + pad * 2
-        val left = 30f
+        val left = 30f * s
         // Offset above bottom control bar when inset is provided
-        val bottom = (h - 30f - bottomInset).coerceAtLeast(boxH + 30f)
+        val bottom = (h - 30f * s - bottomInset).coerceAtLeast(boxH + 30f * s)
         val top = bottom - boxH
         val bounds = RectF(left, top, left + boxW, bottom)
-        canvas.drawRoundRect(bounds, 14f, 14f, telemetryBgPaint)
+        canvas.drawRoundRect(bounds, 14f * s, 14f * s, telemetryBgPaint)
 
         var y = bounds.top + pad + telemetryPaint.textSize
         for (line in lines) {

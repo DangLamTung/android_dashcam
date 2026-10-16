@@ -1,6 +1,30 @@
 # Android Dashcam & Driving HUD
 
-A high-performance, fault-tolerant Android application and Heads-Up Display (HUD) dashcam supporting **USB (UVC/OTG) webcams**, **built-in system cameras (rear/front)**, and **WiFi IP cameras (RTSP / HTTP MJPEG)** with on-device **YOLOv10n AI object detection** accelerated by **NCNN** and **ONNX Runtime**.
+A high-performance, fault-tolerant Android application and Heads-Up Display (HUD) dashcam supporting **USB (UVC/OTG) webcams**, **built-in system cameras (rear/front)**, **WiFi IP cameras (RTSP / HTTP MJPEG)** and the **U2 DVR dashcam (USB mass-storage)** with on-device **YOLOv10n AI object detection** accelerated by **NCNN** and **ONNX Runtime**.
+
+---
+
+## 🎬 Demo
+
+This clip is a real **1280×720** recording made *by the app itself* from a **U2 DVR dashcam**
+(camera source = *U2 DVR*), with the detection boxes, distances and TTC burned into the frames —
+`BOTTLE`, `CUP` and `DINING TABLE` detections, plus the DVR's own clock/speed OSD in the corner.
+Those OSD characters are **cyan**, not magenta — that is the colour pipeline being correct
+(see *True-Color Chroma Pipeline* below):
+
+![Driving HUD demo — U2 DVR 720p with burned-in detections](docs/media/demo-u2-dvr-preview.gif)
+
+| File | What it is |
+| :--- | :--- |
+| [`docs/media/demo-u2-dvr-preview.gif`](docs/media/demo-u2-dvr-preview.gif) | 6 s silent preview, 520 px wide, for viewing inline (2.5 MB) |
+| [`docs/media/demo-u2-dvr-720p.mp4`](docs/media/demo-u2-dvr-720p.mp4) | Full 10 s clip, H.264 in MP4 for in-browser playback |
+| [`docs/media/demo-u2-dvr-720p.mkv`](docs/media/demo-u2-dvr-720p.mkv) | The unmodified file the app wrote: hardware H.264 in Matroska, exactly as it came off the device |
+
+> **Why 720p?** Because that is what this DVR streams. The U2 DVR does not serve a 1080p live
+> feed on any path the app can reach: over USB its removable 2 GB FAT volume only holds a single
+> *static* preview JPEG (`VSFILE`), and in video mode it emits 1280×720 MJPEG only. The vendor app
+> never even asks for another size — it issues `getResolution` (cmd `0x2F`) at connect but never
+> `setResolution` (cmd `0x0F`).
 
 ---
 
@@ -21,7 +45,11 @@ A high-performance, fault-tolerant Android application and Heads-Up Display (HUD
 - **WiFi / IP Network Cameras**:
   - **RTSP Streams** (`rtsp://...`) via hardware-accelerated MediaPlayer.
   - **HTTP MJPEG Streams** (`http://...`) with pooled memory buffers and live canvas rendering.
-- **Quick Camera Switching**: Cycle between USB, System, and WiFi cameras directly from the HUD bottom toolbar or customize via Settings.
+- **U2 DVR Dashcams** (`VID 0x1902 / PID 0x3241`, "Buildwin Media-Player"): these are **not** UVC
+  cameras — they enumerate as USB mass storage. The app claims the interface and pulls the live
+  720p MJPEG stream directly over SCSI Bulk-Only Transport (`DvrBot`), so no vendor app is needed.
+  Close `com.fvision.camera` if it is running: it grabs the same interface.
+- **Quick Camera Switching**: Cycle between USB, System, WiFi and DVR cameras directly from the HUD bottom toolbar or customize via Settings.
 
 ### 3. 💾 Smart Dashcam Recording & Overlay Burn-In
 - **Hardware Matroska (MKV) Recording**: Hardware H.264 MediaCodec encoding directly into `.mkv` files.
@@ -39,7 +67,34 @@ A high-performance, fault-tolerant Android application and Heads-Up Display (HUD
 
 ---
 
-## 🔋 Real-World Battery & Power Benchmarks
+## 🔌 Cameras & Devices We Tested
+
+Every path below was driven end-to-end on real hardware (live preview + detection + recording), not
+just compiled against. "Verified" means we saw frames on screen and in a recorded file.
+
+| Camera / device | How it attaches | What the hardware actually does | Result |
+| :--- | :--- | :--- | :--- |
+| **U2 DVR dashcam** — `VID 0x1902 / PID 0x3241`, product string `GENERAL - AUDIO`, `INQUIRY` → `BuildwinMedia-Player 1.00` | USB **mass storage**, *not* UVC: 1 interface, class 8 / sub 6 / proto `0x50` (Bulk-Only), endpoints `0x01` OUT + `0x81` IN, 512 B | Idle it is a 2 GB FAT volume (2,147,614,720 B, label `Buildwin`) holding `VSFILE`, `HWC` and the vendor's own `DVR.apk`. Once a host claims the interface the FAT disappears and the LUN becomes a **ring of 512 KB video slots** (8704-byte header + one JPEG at offset 8704, slot magic `00 08 00 00`); the ring advances continuously. ~850 KB/s over Bulk-Only ⇒ **1280×720 MJPEG at 14–17 fps** | ✅ **Working** — *U2 DVR* source (`DvrBot` + `DvrUsbCameraController`) |
+| **`icspring camera`** — `VID 0x32E6 / PID 0x9211` | USB **UVC + UAC composite** (webcam with mic), isochronous video endpoints | Advertises MJPEG `bFormatIndex=1` with 8 frame sizes (`fmt=2` raw, 8 more). `VS_COMMIT_CONTROL` **STALLs** for every format/frame/interval tried — and the camera streams anyway as soon as the streaming interface is claimed at alt 3. Host URB must be **8 × 2048 B**: Android reports the high-bandwidth total (3072) which the kernel rejects with `EMSGSIZE` | ✅ **Working** — *USB / UVC* source (libusb) |
+| **Tablet built-in camera** (rear + front) | Camera2 / CSI | Preview and `YUV_420_888` analysis expose *different* size lists; a session only configures on the **intersection** (e.g. preview offers 1920×1080 while analysis stops at 1280×720). Superseded sessions still deliver `onConfigured`, so callbacks are generation-checked | ✅ **Working** — *System* source |
+| **WiFi / IP camera** | RTSP or HTTP | RTSP via `MediaPlayer`; HTTP **MJPEG** streams fed through the same JPEG sink as the DVR | ✅ **Working** — *WiFi* source |
+| **Host: Lenovo TB331FC** tablet, Android 13 (SDK 33), arm64-v8a, 7,000 mAh | — | The device every result above was verified on (PiP, recording, detection all live here) | ✅ |
+| **Host: itel P663LN** phone, Android 13 (SDK 33), Unisoc/Transsion | — | **Unsupported host**: no `video/mjpeg` MediaCodec at all (`NAME_NOT_FOUND`), `openDevice` returns null intermittently, and isochronous host transfers never delivered a single byte. The same UVC camera works on the Lenovo | ⚠️ Documented limitation |
+
+**Operational notes learned the hard way**
+- The U2 DVR's own app (`com.fvision.camera`) force-claims the interface and detaches `usb-storage`
+  (the volume vanishes and the device flaps every ~23 s). Disable it before using DVR mode:
+  `adb shell pm disable-user --user 0 com.fvision.camera`.
+- The DVR's volume UUID changes on every insert, and `/storage/<uuid>` is not readable from `adb`
+  (media_rw group, `fmask=0007`).
+- Android 13 refuses to show the USB permission dialog for a **UVC** device unless the app already
+  holds the `CAMERA` runtime permission.
+- Android 13 large-screen launchers ship their *own* USB camera app (`com.shenyaocn.android.usbcamera`)
+  that holds the camera and makes `openDevice` return null — `pm disable-user` it too.
+
+---
+
+## �🔋 Real-World Battery & Power Benchmarks
 
 Field tested on a device with a **7,000 mAh** battery running **YOLOv10n AI object detection**, active camera streaming, and a **navigation app running concurrently in Picture-in-Picture (PiP)**:
 
@@ -77,10 +132,16 @@ android-dashcam/
 │       │   ├── MainActivity.kt            # HUD UI, telemetry, dialogs & lifecycle
 │       │   ├── SettingsActivity.kt        # Camera, model, confidence & resolution preferences
 │       │   ├── camera/                    # Unified multi-camera coordinator
-│       │   │   ├── CameraCoordinator.kt   # USB / System / WiFi switching
+│       │   │   ├── CameraCoordinator.kt   # USB / System / WiFi / DVR switching
 │       │   │   ├── AusbcCameraController.kt
 │       │   │   ├── SystemCameraController.kt
-│       │   │   └── WifiCameraController.kt
+│       │   │   ├── WifiCameraController.kt
+│       │   │   ├── MjpegFrameSink.kt      # Shared JPEG → NV21 → detect/record pipeline
+│       │   │   ├── DvrUsbCameraController.kt # U2 DVR as a live camera source
+│       │   │   ├── DvrBot.kt              # SCSI Bulk-Only Transport (CBW/CSW)
+│       │   │   ├── DvrFrameParser.kt      # DVR video-slot / JPEG frame parsing
+│       │   │   ├── DvrVolume.kt           # DVR volume discovery + diagnostics
+│       │   │   └── DvrUsbProbe.kt         # Opt-in USB/BOT/header probe
 │       │   ├── detect/                    # YOLOv10n inference engines
 │       │   │   ├── NcnnDetector.kt        # JNI NCNN high-speed inference
 │       │   │   ├── OnnxDetector.kt        # ONNX Runtime fallback
@@ -93,8 +154,16 @@ android-dashcam/
 │       │   ├── alert/                     # Collision warning & TTC tracker
 │       │   └── ui/                        # HUD overlay, distance ladder & widgets
 │       └── jniLibs/arm64-v8a/             # Prebuilt libncnn.so & libusb1.0.so
+├── docs/media/                            # Demo clips verified on hardware (see 🎬 Demo)
+│   ├── demo-u2-dvr-720p.mkv               # Recording exactly as the app wrote it
+│   ├── demo-u2-dvr-720p.mp4               # Same bitstream, remuxed for browser playback
+│   └── demo-u2-dvr-preview.gif            # Inline preview
 └── tools/
-    └── export_yolo_224.py                 # PyTorch YOLO export script
+    ├── debug_tablet.sh                    # One-command on-device debug session + verdict
+    ├── adb_wifi.sh                        # adb-over-WiFi setup
+    ├── export_yolo_224.py                 # PyTorch YOLO export script
+    ├── plt_symbols.py                     # ELF PLT stub → imported symbol map
+    └── annotate_disasm.py                 # Rewrite disassembly with real symbol names
 ```
 
 ---

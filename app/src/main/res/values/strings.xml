@@ -6,6 +6,8 @@
     <string name="status_requesting_permission">Requesting USB Permission…</string>
     <string name="status_no_prompt">No USB prompt? Tap Connect to retry</string>
     <string name="status_disconnected">Camera Disconnected (Auto-Reconnecting…)</string>
+    <!-- %1$s = what the attached USB device actually exposes (e.g. "GENERAL - AUDIO [1902:3241 mass-storage]") -->
+    <string name="status_not_a_uvc_camera">No UVC camera: %1$s</string>
     <string name="status_permission_denied">USB Permission Denied</string>
     <!-- %1$s = camera product name, e.g. "icspring camera" -->
     <string name="status_connected_named">Camera Connected (%1$s)</string>

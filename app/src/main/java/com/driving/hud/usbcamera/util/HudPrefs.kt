@@ -70,9 +70,15 @@ object HudPrefs {
 
     /**
      * Minimum gap between detection passes, in ms. Inference is by far the most expensive
-     * thing the app does on CPU, so this is the main throttle: 500 ms = 2 passes/second.
+     * thing the app does on CPU, so this is the main throttle.
+     *
+     * Default 200 ms = 5 passes/second. Measured on the tablet, the old 500 ms default landed
+     * passes ~0.55 s apart, and boxes that refresh twice a second visibly trail the scene — that
+     * is what makes the detector feel laggy next to a plain webcam. A pass costs far less than
+     * that budget, so the extra rate is what keeps the overlay attached to the picture. Set it
+     * back to 1000 ms when thermals matter more than responsiveness.
      */
-    fun detectIntervalMs(ctx: Context) = sp(ctx).getInt(KEY_DETECT_INTERVAL, 500)
+    fun detectIntervalMs(ctx: Context) = sp(ctx).getInt(KEY_DETECT_INTERVAL, 200)
 
     fun setDetectIntervalMs(ctx: Context, v: Int) =
         sp(ctx).edit().putInt(KEY_DETECT_INTERVAL, v).apply()
@@ -129,6 +135,13 @@ object HudPrefs {
     const val MODE_USB = "usb"
     const val MODE_SYSTEM = "system"
     const val MODE_WIFI = "wifi"
+
+    /**
+     * The "U2 DVR" (Buildwin / Huiying) dashcam: a mass-storage device, not a UVC
+     * camera. Its video is read with SCSI Bulk-Only Transport - see
+     * [com.driving.hud.usbcamera.camera.DvrUsbCameraController].
+     */
+    const val MODE_DVR = "dvr"
 
     const val FACING_BACK = "back"
     const val FACING_FRONT = "front"

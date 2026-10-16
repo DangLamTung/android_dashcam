@@ -56,6 +56,7 @@ class SettingsActivity : AppCompatActivity() {
         val rbCamUsb = findViewById<RadioButton>(R.id.rbCamUsb)
         val rbCamSystem = findViewById<RadioButton>(R.id.rbCamSystem)
         val rbCamWifi = findViewById<RadioButton>(R.id.rbCamWifi)
+        val rbCamDvr = findViewById<RadioButton>(R.id.rbCamDvr)
         val rbLensBack = findViewById<RadioButton>(R.id.rbLensBack)
         val rbLensFront = findViewById<RadioButton>(R.id.rbLensFront)
         val etWifiUrl = findViewById<EditText>(R.id.etWifiUrl)
@@ -90,6 +91,7 @@ class SettingsActivity : AppCompatActivity() {
         when (HudPrefs.cameraMode(this)) {
             HudPrefs.MODE_SYSTEM -> rbCamSystem.isChecked = true
             HudPrefs.MODE_WIFI -> rbCamWifi.isChecked = true
+            HudPrefs.MODE_DVR -> rbCamDvr.isChecked = true
             else -> rbCamUsb.isChecked = true
         }
 
@@ -151,6 +153,7 @@ class SettingsActivity : AppCompatActivity() {
             val mode = when {
                 rbCamSystem.isChecked -> HudPrefs.MODE_SYSTEM
                 rbCamWifi.isChecked -> HudPrefs.MODE_WIFI
+                rbCamDvr.isChecked -> HudPrefs.MODE_DVR
                 else -> HudPrefs.MODE_USB
             }
             HudPrefs.setCameraMode(this, mode)

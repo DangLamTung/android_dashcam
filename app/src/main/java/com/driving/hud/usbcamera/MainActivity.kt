@@ -24,6 +24,8 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.driving.hud.usbcamera.camera.AusbcCameraController
 import com.driving.hud.usbcamera.camera.CameraCoordinator
+import com.driving.hud.usbcamera.camera.DvrUsbProbe
+import com.driving.hud.usbcamera.camera.DvrVolume
 import com.driving.hud.usbcamera.calib.GroundPlaneCalibration
 import com.driving.hud.usbcamera.alert.AlertTone
 import com.driving.hud.usbcamera.alert.VehicleTracker
@@ -52,6 +54,16 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
     companion object {
         private const val TAG = "MainActivity"
         const val EXTRA_START_CALIBRATION = "com.driving.hud.usbcamera.START_CALIBRATION"
+
+        /**
+         * Extra for the diagnostic "U2 DVR" USB probe. It claims the DVR's interface
+         * (which detaches `usb-storage` and unmounts the volume for the duration), so
+         * it is opt-in:
+         *
+         * `adb shell am start -n com.driving.hud.usbcamera/.MainActivity \
+         *      --ez com.driving.hud.usbcamera.DVR_PROBE true`
+         */
+        const val EXTRA_DVR_PROBE = "com.driving.hud.usbcamera.DVR_PROBE"
     }
 
     private lateinit var binding: ActivityMainBinding
@@ -158,6 +170,22 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
         // stay registered through onStop so the permission result is received
         // even while the system permission dialog covers the app.
         cameraManager.registerReceiver()
+        // Start the detector session during startup: a remembered backend still costs ~7 s of
+        // native init, and paying it here beats showing live video with no boxes for 7 s.
+        cameraManager.prewarmDetector()
+
+        // The "U2 DVR" is a mass-storage dashcam (not UVC): its live preview is a
+        // file on the DVR's own card. Log what that volume holds; the deeper USB
+        // probe claims the interface, so it only runs when explicitly requested.
+        val dvrUsbProbe = intent?.getBooleanExtra(EXTRA_DVR_PROBE, false) == true
+        Thread {
+            runCatching { DvrVolume.probe(applicationContext) }
+                .onFailure { HudLogger.e(TAG, "DVR volume probe failed", it) }
+            if (dvrUsbProbe) {
+                runCatching { DvrUsbProbe.probe(applicationContext) }
+                    .onFailure { HudLogger.e(TAG, "DVR USB probe failed", it) }
+            }
+        }.start()
 
         setupHomeControls()
         setupHudControls()
@@ -484,6 +512,47 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
     }
 
     /**
+     * Keeps the floating-window parameters in step with the current state.
+     *
+     * On Android 12+ this is what makes the HUD float **by itself** as soon as the user swipes
+     * home while it is streaming - no button, no "draw over other apps" permission. Auto-enter
+     * is switched off outside HUD mode so leaving the app from the menu backgrounds normally
+     * instead of floating an empty window.
+     */
+    private fun updatePipParams() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        try {
+            val (fw, fh) = cameraManager.frameSize()
+            val w = if (fw > 0) fw else 16
+            val h = if (fh > 0) fh else 9
+            val autoEnter = isHudMode && !isCalibrationMode && cameraManager.isStreaming()
+            val builder = PictureInPictureParams.Builder().setAspectRatio(Rational(w, h))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                builder.setAutoEnterEnabled(autoEnter)
+                builder.setSeamlessResizeEnabled(false)
+            }
+            setPictureInPictureParams(builder.build())
+            HudLogger.i(TAG, "pip params: ${w}x${h} autoEnter=$autoEnter")
+        } catch (t: Throwable) {
+            HudLogger.w(TAG, "pip params failed: ${t.message}")
+        }
+    }
+
+    /**
+     * Android 11 and older have no auto-enter, so the HUD floats when the user actually leaves
+     * the app - and only while it is streaming something worth floating.
+     */
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S &&
+            isHudMode && !isCalibrationMode && cameraManager.isStreaming() && !isInPictureInPictureMode
+        ) {
+            HudLogger.i(TAG, "user left the app while streaming - floating the HUD")
+            enterPipMode()
+        }
+    }
+
+    /**
      * Pop the HUD out into a floating window on top of whatever else is running.
      *
      * Picture-in-picture is Android's own floating-window mechanism, so it needs no "draw over
@@ -530,6 +599,22 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
         HudLogger.i(TAG, "picture-in-picture -> $isInPictureInPictureMode")
         binding.controlBar.visibility = if (isInPictureInPictureMode) View.GONE else View.VISIBLE
         binding.tvStatus.visibility = if (isInPictureInPictureMode) View.GONE else View.VISIBLE
+        // The FPS/CPU readout is a debug aid: at 430 px wide it would sit on top of the picture.
+        binding.tvStats.visibility = if (isInPictureInPictureMode) View.GONE else View.VISIBLE
+        // At ~430 px wide the full HUD overlay is unreadable: keep boxes, distances and the
+        // alert banner, and drop the grid, lane guides and the telemetry readout.
+        binding.hudOverlayView.setCompact(isInPictureInPictureMode)
+        // The floating window shows the video and the overlay only: menus and the calibration
+        // wizard would not be usable at that size.
+        if (isInPictureInPictureMode) {
+            binding.homePanel.visibility = View.GONE
+            binding.calibrationPanel.visibility = View.GONE
+            binding.hudPanel.visibility = View.VISIBLE
+        } else {
+            binding.homePanel.visibility = if (isHudMode || isCalibrationMode) View.GONE else View.VISIBLE
+            binding.calibrationPanel.visibility = if (isCalibrationMode) View.VISIBLE else View.GONE
+            binding.hudPanel.visibility = if (isCalibrationMode) View.GONE else View.VISIBLE
+        }
         binding.controlBar.post { updateControlBarInset() }
         binding.rootContainer.post { applyVideoFit(force = true) }
     }
@@ -677,12 +762,14 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
             "USB Camera (UVC)",
             "System Camera (Rear Lens)",
             "System Camera (Front Lens)",
-            "WiFi / IP Camera (RTSP / HTTP MJPEG)"
+            "WiFi / IP Camera (RTSP / HTTP MJPEG)",
+            "U2 DVR Dashcam (USB, Buildwin)"
         )
 
         val currentIdx = when (cameraManager.currentMode) {
             HudPrefs.MODE_SYSTEM -> if (HudPrefs.systemFacing(this) == HudPrefs.FACING_FRONT) 2 else 1
             HudPrefs.MODE_WIFI -> 3
+            HudPrefs.MODE_DVR -> 4
             else -> 0
         }
 
@@ -701,6 +788,7 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
                         cameraManager.switchMode(HudPrefs.MODE_SYSTEM)
                     }
                     3 -> cameraManager.switchMode(HudPrefs.MODE_WIFI)
+                    4 -> cameraManager.switchMode(HudPrefs.MODE_DVR)
                 }
                 updateCameraSourceButton()
             }
@@ -715,6 +803,7 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
                 if (isFront) "CAM: PHONE (FRONT)" else "CAM: PHONE (BACK)"
             }
             HudPrefs.MODE_WIFI -> "CAM: WIFI"
+            HudPrefs.MODE_DVR -> "CAM: U2 DVR"
             else -> "CAM: USB"
         }
     }
@@ -726,6 +815,7 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
         binding.hudPanel.visibility = View.GONE
         binding.homePanel.visibility = View.VISIBLE
         disableImmersiveMode()
+        updatePipParams()
     }
 
     /** Last window size the preview surface was fitted to. */
@@ -784,6 +874,7 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
         binding.controlBar.post { updateControlBarInset() }
         // The camera may already be open, so fit immediately rather than waiting for a resize.
         binding.rootContainer.post { applyVideoFit(force = true) }
+        updatePipParams()
     }
 
     private fun exitHud() {
@@ -1056,6 +1147,11 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
 
     override fun onStop() {
         super.onStop()
+        if (isInPictureInPictureMode) {
+            // The floating window is still on screen, so the stream (and the ticker) keep going.
+            HudLogger.i(TAG, "onStop while floating - camera kept running")
+            return
+        }
         HudLogger.i(TAG, "onStop - background (receiver stays registered)")
         uiHandler.removeCallbacks(telemetryTicker)
         cameraManager.onAppBackgrounded()
@@ -1117,6 +1213,8 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
         runOnUiThread {
             binding.tvStatus.text = status
             binding.tvHomeStatus.text = status
+            // Streaming may just have started or stopped: re-arm the floating window.
+            updatePipParams()
             val color = when {
                 status.contains("Connected", ignoreCase = true) ||
                     status.contains("Streaming", ignoreCase = true) -> Color.parseColor("#00E676")
@@ -1129,6 +1227,11 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
             if (status.contains("Streaming", ignoreCase = true) && !isHudMode) {
                 binding.tvHomeDetail.text = "Streaming. Tap START HUD for fullscreen."
             }
+            // Switching camera source can change the stream aspect ratio after the preview has
+            // already been fitted, which leaves the picture stretched until the window happens
+            // to change. Re-fitting here is cheap: applyVideoFit() returns immediately when both
+            // the frame size and the window size are unchanged.
+            applyVideoFit()
         }
     }
 
@@ -1193,6 +1296,10 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
             binding.tvStats.text = "$fpsText   $perfText"
             maybeRefreshCalibration()
             refreshTelemetry()
+            // Catches a stream size that only became known after the first fit — the system
+            // camera negotiates its size asynchronously, so the preview can be fitted for the
+            // wrong aspect until the next window change.
+            applyVideoFit()
         }
         // Periodically write battery statistics into on-device log
         batteryTracker.logIfNeeded(minIntervalMs = 30_000)

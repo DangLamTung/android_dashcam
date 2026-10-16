@@ -98,6 +98,13 @@ class AusbcCameraController(
 
     private var monitor: USBMonitor? = null
     private var camera: UVCCamera? = null
+
+    /**
+     * Set by [CameraCoordinator]: a device arriving only triggers a UVC scan when the active
+     * source is actually the USB/UVC camera.
+     */
+    @Volatile
+    var autoScanOnAttach: Boolean = true
     private var activeDevice: UsbDevice? = null
     private var outputSurface: Surface? = null
     private var surfaceDestroyed = false
@@ -169,6 +176,12 @@ class AusbcCameraController(
     private val deviceListener = object : USBMonitor.OnDeviceConnectListener {
         override fun onAttach(device: UsbDevice) {
             HudLogger.i(TAG, "onAttach: ${device.productName} (${device.deviceName})")
+            // The active source may not be a UVC camera at all (the U2 DVR is mass storage), in
+            // which case scanning here would only produce a misleading "no UVC camera" status.
+            if (!autoScanOnAttach) {
+                HudLogger.i(TAG, "  -> active source is not USB/UVC; leaving the device alone")
+                return
+            }
             listener.onStatusChanged(context.getString(R.string.status_attached_connecting))
             scanAndConnect()
         }
@@ -311,9 +324,15 @@ class AusbcCameraController(
         devices.forEach {
             HudLogger.d(TAG, "  USB: ${it.deviceName} name=${it.productName} class=${it.deviceClass}")
         }
-        val dev = devices.firstOrNull { isUvcDevice(it) } ?: devices.firstOrNull()
+        // Deliberately NOT "?: devices.firstOrNull()". A DVR or dashcam plugged in as a card
+        // reader advertises a mass-storage interface and no video interface at all, so opening
+        // it as a camera can only fail - and the failure then looks like an app bug rather than
+        // a camera sitting in the wrong USB mode. Report what is actually attached instead.
+        val dev = devices.firstOrNull { isUvcDevice(it) }
         if (dev == null) {
-            listener.onStatusChanged(context.getString(R.string.status_waiting_camera))
+            val summary = devices.joinToString("; ") { describeUsbFunction(it) }
+            HudLogger.w(TAG, "  -> no UVC video interface on any attached device: $summary")
+            listener.onStatusChanged(context.getString(R.string.status_not_a_uvc_camera, summary))
             return
         }
         HudLogger.i(TAG, "  -> UVC device found: ${dev.deviceName} (${dev.productName})")
@@ -344,6 +363,29 @@ class AusbcCameraController(
         return device.deviceClass == 239
     }
 
+    /** Names the function a USB device actually advertises, for the log and the status line. */
+    private fun describeUsbFunction(device: UsbDevice): String {
+        val ifaces = (0 until device.interfaceCount).joinToString("/") { i ->
+            nameForUsbClass(device.getInterface(i).interfaceClass)
+        }
+        val vid = String.format(java.util.Locale.US, "%04X", device.vendorId)
+        val pid = String.format(java.util.Locale.US, "%04X", device.productId)
+        val name = device.productName ?: device.deviceName
+        return "$name [$vid:$pid ${ifaces.ifEmpty { "no interfaces" }}]"
+    }
+
+    private fun nameForUsbClass(cls: Int): String = when (cls) {
+        UsbConstants.USB_CLASS_VIDEO -> "video(UVC)"
+        UsbConstants.USB_CLASS_AUDIO -> "audio"
+        UsbConstants.USB_CLASS_MASS_STORAGE -> "mass-storage"
+        UsbConstants.USB_CLASS_HID -> "hid"
+        UsbConstants.USB_CLASS_COMM -> "comm"
+        UsbConstants.USB_CLASS_HUB -> "hub"
+        UsbConstants.USB_CLASS_MISC -> "misc"
+        UsbConstants.USB_CLASS_WIRELESS_CONTROLLER -> "wireless"
+        else -> "class$cls"
+    }
+
     fun describeUsbDevices(): String {
         val m = monitor ?: return "USB monitor not ready (0 device(s))"
         val devices = try {
@@ -358,8 +400,8 @@ class AusbcCameraController(
             devices.forEach { d ->
                 val uvc = isUvcDevice(d)
                 anyUvc = anyUvc || uvc
-                append("• ${d.productName ?: d.deviceName}\n")
-                append("   VID:0x${String.format("%04X", d.vendorId)} PID:0x${String.format("%04X", d.productId)} class=${d.deviceClass} perm=${m.hasPermission(d)}\n")
+                append("• ${describeUsbFunction(d)}\n")
+                append("   perm=${m.hasPermission(d)} uvc=$uvc\n")
             }
             append("UVC camera found: $anyUvc")
         }
@@ -919,6 +961,8 @@ class AusbcCameraController(
     fun startRecording(): RecordingStartInfo? {
         if (rec?.isRecording == true) return null
         val r = MkvRecorder(context)
+        // The UVC engine hands us its own buffer, so its chroma order (not the app's NV21
+        // convention) is what the encoder must match; the Settings toggle covers OEM variants.
         val file = r.start(frameW, frameH, HudPrefs.targetFps(context))
         if (file == null) {
             HudLogger.w(TAG, "recording could not start")

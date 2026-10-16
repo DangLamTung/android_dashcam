@@ -20,5 +20,13 @@ captures/
 *.iml
 .DS_Store
 
+# Python bytecode from the reverse-engineering helpers in tools/
+__pycache__/
+*.pyc
+
 # On-device logs pulled with adb
 *.log
+
+# Test recordings pulled off the device into the repo root
+/*.mkv
+/*.srt

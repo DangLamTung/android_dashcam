@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-feature
         android:name="android.hardware.usb.host"
@@ -26,6 +27,15 @@
         android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!--
+        The "U2 DVR" dashcam is a mass-storage device, not a UVC camera: its live
+        preview is a file on the DVR's own SD card (<volume>/VSFILE). Reading that
+        file by path on Android 11+ needs All-files access; the vendor app only gets
+        away without it because it targets API 26 and keeps legacy storage.
+    -->
+    <uses-permission
+        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
 
     <application
         android:allowBackup="true"
