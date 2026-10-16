@@ -124,11 +124,7 @@ class MjpegFrameSink(
         // path used to) re-ran the whole shoot-out on every single connect, so the model was
         // loaded again and again for a result that never changes.
         val cacheKey = "$asset@${w}x$h"
-        val cached = if (HudPrefs.detectProviderKey(context) == cacheKey) {
-            HudPrefs.detectProvider(context).takeIf { it.isNotBlank() }
-        } else {
-            null
-        }
+        val cached = HudPrefs.detectProviderFor(context, cacheKey).takeIf { it.isNotBlank() }
         if (cached != null) {
             HudLogger.i(tag, "reusing detector backend '$cached' for $cacheKey (skipping benchmark)")
         }
@@ -150,7 +146,7 @@ class MjpegFrameSink(
                 detector = built
                 if (built != null && cached == null) {
                     val winner = DetectorFactory.activeBackend
-                    HudPrefs.setDetectProvider(context, winner, cacheKey)
+                    HudPrefs.setDetectProviderFor(context, cacheKey, winner)
                     HudLogger.i(tag, "remembered detector backend '$winner' for $cacheKey")
                 }
             } finally {

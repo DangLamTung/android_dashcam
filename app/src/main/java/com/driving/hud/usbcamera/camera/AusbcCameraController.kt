@@ -1007,11 +1007,7 @@ class AusbcCameraController(
     private fun startDetectorAsync(ctx: Context, w: Int, h: Int) {
         val asset = HudPrefs.modelAsset(ctx)
         val cacheKey = "$asset@${w}x$h"
-        val cached = if (HudPrefs.detectProviderKey(ctx) == cacheKey) {
-            HudPrefs.detectProvider(ctx).takeIf { it.isNotBlank() }
-        } else {
-            null
-        }
+        val cached = HudPrefs.detectProviderFor(ctx, cacheKey).takeIf { it.isNotBlank() }
         if (cached != null) {
             HudLogger.i(TAG, "reusing provider '$cached' for $cacheKey (skipping benchmark)")
         }
@@ -1041,7 +1037,7 @@ class AusbcCameraController(
             if (cached == null) {
                 val key = "${OnnxDetector.activeAsset}@${w}x$h"
                 val winner = DetectorFactory.activeBackend
-                HudPrefs.setDetectProvider(ctx, winner, key)
+                HudPrefs.setDetectProviderFor(ctx, key, winner)
                 HudLogger.i(TAG, "remembered backend '$winner' for $key")
             }
         }

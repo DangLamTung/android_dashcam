@@ -30,6 +30,7 @@ class DvrBot(
     private val connection: UsbDeviceConnection,
     private val outEndpoint: UsbEndpoint,
     private val inEndpoint: UsbEndpoint,
+    private val interfaceId: Int = 0,
     private val timeoutMs: Int = 1000,
 ) {
     private companion object {
@@ -38,6 +39,10 @@ class DvrBot(
         const val CSW_SIGNATURE = 0x53425355
         const val TAG_VALUE = 0x74b4ea50
         const val BLOCK = 512
+
+        /** Class-specific Bulk-Only Mass Storage Reset (bmRequestType 0x21, bRequest 0xFF). */
+        const val BOT_RESET_REQUEST_TYPE = 0x21
+        const val BOT_RESET_REQUEST = 0xFF
     }
 
     /** Last CSW status byte (0 = passed), -1 when the transfer never produced one. */
@@ -56,7 +61,7 @@ class DvrBot(
         }.array()
 
     private fun sendCbw(cbw: ByteArray): Boolean {
-        val sent = connection.bulkTransfer(outEndpoint, cbw, cbw.size, timeoutMs)
+        val sent = bulkOut(cbw, 0, cbw.size)
         if (sent != cbw.size) {
             HudLogger.w(TAG, "CBW write failed: $sent")
             return false
@@ -64,9 +69,63 @@ class DvrBot(
         return true
     }
 
+    /**
+     * Bulk transfers throw once the connection is closed underneath us (a cable pulled while a
+     * transfer is in flight, or a source being torn down). That is a normal race here, not a
+     * crash: report it as a failed transfer.
+     */
+    private fun bulkIn(buffer: ByteArray, offset: Int, length: Int): Int = try {
+        connection.bulkTransfer(inEndpoint, buffer, offset, length, timeoutMs)
+    } catch (t: Throwable) {
+        HudLogger.w(TAG, "bulk IN failed: ${t.message}")
+        -1
+    }
+
+    private fun bulkOut(buffer: ByteArray, offset: Int, length: Int): Int = try {
+        connection.bulkTransfer(outEndpoint, buffer, offset, length, timeoutMs)
+    } catch (t: Throwable) {
+        HudLogger.w(TAG, "bulk OUT failed: ${t.message}")
+        -1
+    }
+
+    /**
+     * Bulk-Only Transport error recovery.
+     *
+     * A data phase that ends short leaves host and device disagreeing about where the next CSW
+     * begins, and the only way back per the spec is the class-specific Bulk-Only Mass Storage
+     * Reset followed by CLEAR-FEATURE(HALT) on both endpoints. Without it every later command
+     * fails until the DVR is physically unplugged.
+     */
+    fun resetPipe() {
+        try {
+            val rc = connection.controlTransfer(
+                BOT_RESET_REQUEST_TYPE, BOT_RESET_REQUEST, 0, interfaceId, null, 0, timeoutMs,
+            )
+            HudLogger.i(TAG, "BOT mass-storage reset -> $rc")
+        } catch (t: Throwable) {
+            HudLogger.w(TAG, "BOT reset request failed: ${t.message}")
+        }
+        clearHalt(outEndpoint)
+        clearHalt(inEndpoint)
+    }
+
+    /**
+     * Standard CLEAR_FEATURE(ENDPOINT_HALT) for one endpoint. `UsbDeviceConnection` has no
+     * `clearHalt`, so this is the raw request: bmRequestType 0x02 (standard, endpoint recipient),
+     * bRequest 0x01, wValue 0 (halt), wIndex = the endpoint address.
+     */
+    private fun clearHalt(endpoint: UsbEndpoint) {
+        try {
+            val rc = connection.controlTransfer(0x02, 0x01, 0, endpoint.address, null, 0, timeoutMs)
+            HudLogger.i(TAG, "CLEAR_FEATURE(HALT) ep 0x%02x -> %d".format(endpoint.address, rc))
+        } catch (t: Throwable) {
+            HudLogger.w(TAG, "CLEAR_FEATURE(HALT) failed: ${t.message}")
+        }
+    }
+
     private fun readCsw(): Int {
         val csw = ByteArray(13)
-        val got = connection.bulkTransfer(inEndpoint, csw, csw.size, timeoutMs)
+        val got = bulkIn(csw, 0, csw.size)
         if (got != csw.size) {
             HudLogger.w(TAG, "CSW read got $got")
             return -1
@@ -82,8 +141,7 @@ class DvrBot(
 
     private fun roundUpToBlocks(bytes: Int): Int = ((bytes + BLOCK - 1) / BLOCK) * BLOCK
 
-    /** SCSI READ(10) — returns exactly `blocks * 512` bytes, or null on failure. */
-    fun read10(lba: Int, blocks: Int): ByteArray? {
+    private fun readCdb(lba: Int, blocks: Int): ByteArray {
         val cdb = ByteArray(10)
         cdb[0] = 0x28
         cdb[2] = ((lba ushr 24) and 0xFF).toByte()
@@ -92,20 +150,40 @@ class DvrBot(
         cdb[5] = (lba and 0xFF).toByte()
         cdb[7] = ((blocks ushr 8) and 0xFF).toByte()
         cdb[8] = (blocks and 0xFF).toByte()
+        return cdb
+    }
+
+    /**
+     * SCSI READ(10) into a caller-owned buffer - the streaming path reuses one buffer per frame
+     * instead of allocating ~90 KB at 15 fps.
+     *
+     * @return bytes read (always `blocks * 512`), or -1 when the transfer failed or came up short
+     */
+    fun read10Into(lba: Int, blocks: Int, buffer: ByteArray): Int {
         val length = blocks * BLOCK
-        if (!sendCbw(buildCbw(cdb, length, dataIn = true))) return null
-        val data = ByteArray(length)
+        if (buffer.size < length) return -1
+        if (!sendCbw(buildCbw(readCdb(lba, blocks), length, dataIn = true))) return -1
         var received = 0
         while (received < length) {
-            val n = connection.bulkTransfer(inEndpoint, data, received, length - received, timeoutMs)
-            if (n <= 0) {
-                HudLogger.w(TAG, "read10 data stalled at $received/$length")
-                break
-            }
+            val n = bulkIn(buffer, received, length - received)
+            if (n <= 0) break
             received += n
         }
+        if (received != length) {
+            HudLogger.w(TAG, "read10 stalled at $received/$length; resetting the BOT pipe")
+            lastStatus = -1
+            resetPipe()
+            return -1
+        }
         lastStatus = readCsw()
-        return if (received == length) data else null
+        if (lastStatus < 0) resetPipe()
+        return length
+    }
+
+    /** SCSI READ(10) — returns exactly `blocks * 512` bytes, or null on failure. */
+    fun read10(lba: Int, blocks: Int): ByteArray? {
+        val data = ByteArray(blocks * BLOCK)
+        return if (read10Into(lba, blocks, data) == data.size) data else null
     }
 
     /** SCSI WRITE(10) — the vendor uses this for its command channel. */
@@ -123,14 +201,18 @@ class DvrBot(
         if (!sendCbw(buildCbw(cdb, length, dataIn = false))) return false
         var sent = 0
         while (sent < length) {
-            val n = connection.bulkTransfer(outEndpoint, payload, sent, length - sent, timeoutMs)
-            if (n <= 0) {
-                HudLogger.w(TAG, "write10 data stalled at $sent/$length")
-                break
-            }
+            val n = bulkOut(payload, sent, length - sent)
+            if (n <= 0) break
             sent += n
         }
+        if (sent != length) {
+            HudLogger.w(TAG, "write10 stalled at $sent/$length; resetting the BOT pipe")
+            lastStatus = -1
+            resetPipe()
+            return false
+        }
         lastStatus = readCsw()
+        if (lastStatus < 0) resetPipe()
         return lastStatus == 0
     }
 
@@ -141,7 +223,7 @@ class DvrBot(
         cdb[4] = 36
         if (!sendCbw(buildCbw(cdb, 36, dataIn = true))) return null
         val data = ByteArray(36)
-        val n = connection.bulkTransfer(inEndpoint, data, 36, timeoutMs)
+        val n = bulkIn(data, 0, 36)
         lastStatus = readCsw()
         return if (n > 0) data else null
     }
@@ -152,7 +234,7 @@ class DvrBot(
         cdb[0] = 0x25
         if (!sendCbw(buildCbw(cdb, 8, dataIn = true))) return null
         val data = ByteArray(8)
-        val n = connection.bulkTransfer(inEndpoint, data, 8, timeoutMs)
+        val n = bulkIn(data, 0, 8)
         lastStatus = readCsw()
         if (n <= 0) return null
         val buf = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN)

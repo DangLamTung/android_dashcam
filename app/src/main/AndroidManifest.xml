@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-feature
         android:name="android.hardware.usb.host"
@@ -28,14 +27,12 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!--
-        The "U2 DVR" dashcam is a mass-storage device, not a UVC camera: its live
-        preview is a file on the DVR's own SD card (<volume>/VSFILE). Reading that
-        file by path on Android 11+ needs All-files access; the vendor app only gets
-        away without it because it targets API 26 and keeps legacy storage.
+        The U2 DVR volume diagnostics need All-files access to read the DVR's own card by path
+        (`<volume>/VSFILE`). That is a debug-build tool only: the DVR camera source itself reads
+        MJPEG over USB Bulk-Only Transport and needs no storage permission at all, and Google Play
+        restricts MANAGE_EXTERNAL_STORAGE to file managers, backup and antivirus apps. The
+        permission therefore lives in `src/debug/AndroidManifest.xml`.
     -->
-    <uses-permission
-        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
-        tools:ignore="ScopedStorage" />
 
     <application
         android:allowBackup="true"

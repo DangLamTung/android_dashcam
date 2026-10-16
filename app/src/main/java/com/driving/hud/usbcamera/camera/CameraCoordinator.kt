@@ -42,10 +42,14 @@ class CameraCoordinator(
 
     fun registerReceiver() {
         usbController.registerReceiver()
+        // The DVR source needs its own detach signal: the UVC engine ignores devices that are not
+        // UVC cameras, so unplugging the DVR would otherwise go unnoticed.
+        dvrController.registerReceiver()
     }
 
     fun unregister() {
         usbController.unregister()
+        dvrController.unregister()
     }
 
     fun setOutputSurface(surface: Surface?, holder: SurfaceHolder? = null) {

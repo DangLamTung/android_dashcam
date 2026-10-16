@@ -91,4 +91,16 @@ object DvrFrameParser {
         val bytes = soi + frameSize.coerceAtLeast(1) + 1024
         return ((bytes + 511) / 512).coerceIn(1, maxBlocks)
     }
+
+    /**
+     * Blocks to read when the frame size is already known from the previous frame, so the slot
+     * header and the JPEG body arrive in **one** transfer instead of two round trips per frame.
+     *
+     * [blocksFor] adds 1 KB of slack beyond the frame, which covers the small frame-to-frame
+     * variation the DVR shows (measured 64.5-66.5 KB). A frame that grows past that makes
+     * [extractFrame] return null, and the caller falls back to a second read sized from the
+     * fresh hint in the header.
+     */
+    fun blocksForKnownSize(frameSize: Int, maxBlocks: Int): Int =
+        blocksFor(FRAME_OFFSET, frameSize, maxBlocks)
 }

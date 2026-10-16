@@ -669,11 +669,7 @@ class SystemCameraController(
         // the HUD with no boxes at all for those 15 s - the single biggest reason the detector
         // felt laggy. Reuse the remembered backend, and remember the winner when we do pay.
         val cacheKey = "$asset@${w}x$h"
-        val cached = if (HudPrefs.detectProviderKey(context) == cacheKey) {
-            HudPrefs.detectProvider(context).takeIf { it.isNotBlank() }
-        } else {
-            null
-        }
+        val cached = HudPrefs.detectProviderFor(context, cacheKey).takeIf { it.isNotBlank() }
         if (cached != null) {
             HudLogger.i(TAG, "reusing detector backend '$cached' for $cacheKey (skipping benchmark)")
         }
@@ -695,7 +691,7 @@ class SystemCameraController(
                 detector = built
                 if (built != null && cached == null) {
                     val winner = DetectorFactory.activeBackend
-                    HudPrefs.setDetectProvider(context, winner, cacheKey)
+                    HudPrefs.setDetectProviderFor(context, cacheKey, winner)
                     HudLogger.i(TAG, "remembered detector backend '$winner' for $cacheKey")
                 }
             } finally {

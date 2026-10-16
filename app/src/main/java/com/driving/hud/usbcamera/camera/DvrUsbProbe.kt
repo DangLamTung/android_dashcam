@@ -176,7 +176,7 @@ object DvrUsbProbe {
                 val result = connection.controlTransfer(0x42, 0x00, 0, 0, byteArrayOf(1), 1, 500)
                 HudLogger.i(TAG, "controlTransfer(0x42,0x00,value=0,index=0,{1})=$result")
             }
-            botProbe(context, connection, outEp, inEp)
+            botProbe(context, connection, outEp, inEp, intf.id)
         } catch (t: Throwable) {
             HudLogger.e(TAG, "probe failed", t)
         } finally {
@@ -195,9 +195,10 @@ object DvrUsbProbe {
         connection: android.hardware.usb.UsbDeviceConnection,
         outEp: android.hardware.usb.UsbEndpoint,
         inEp: android.hardware.usb.UsbEndpoint,
+        interfaceId: Int,
         readSeconds: Int = 8,
     ) {
-        val bot = DvrBot(connection, outEp, inEp)
+        val bot = DvrBot(connection, outEp, inEp, interfaceId)
         bot.inquiry()?.let {
             HudLogger.i(TAG, "INQUIRY status=${bot.lastStatus} text='${String(it).trim()}' hex=${bot.hex(it)}")
         } ?: HudLogger.w(TAG, "INQUIRY failed")

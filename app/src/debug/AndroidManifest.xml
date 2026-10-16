@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Debug-only permissions.
+
+    MANAGE_EXTERNAL_STORAGE is used by the U2 DVR **volume diagnostics** (`DvrVolume.probe`),
+    which read the DVR's own card by path to document what it holds. The camera source itself
+    streams MJPEG over USB Bulk-Only Transport and needs no storage access, and Google Play
+    restricts this permission to file managers, backup and antivirus apps — so it must not be in
+    the release manifest. Debug builds keep it, which is where the diagnostics run.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission
+        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+
+</manifest>

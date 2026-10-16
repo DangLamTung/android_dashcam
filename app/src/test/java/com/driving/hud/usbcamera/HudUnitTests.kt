@@ -5,6 +5,7 @@ import com.driving.hud.usbcamera.calib.GroundPlaneCalibration
 import com.driving.hud.usbcamera.camera.DvrFrameParser
 import com.driving.hud.usbcamera.record.H264AnnexB
 import com.driving.hud.usbcamera.ui.VideoFit
+import com.driving.hud.usbcamera.util.ProviderMemory
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -525,5 +526,74 @@ class HudUnitTests {
         assertEquals(3, DvrFrameParser.blocksFor(0, 0, 1024))
         val header = dvrSlot(ByteArray(2048), frameSizeField = 64504)
         assertEquals(64504, DvrFrameParser.frameSizeHint(header))
+    }
+
+    @Test
+    fun testDvrSingleTransferReadCoversAndFallsBack() {
+        // The streaming loop now reads a frame in ONE transfer, sized from the previous frame's
+        // header hint, instead of a 16 KB header read plus a ~76 KB body read.
+        val jpeg = ByteArray(4096)
+        jpeg[0] = 0xFF.toByte()
+        jpeg[1] = 0xD8.toByte()
+        jpeg[2] = 0xFF.toByte()
+        jpeg[jpeg.size - 2] = 0xFF.toByte()
+        jpeg[jpeg.size - 1] = 0xD9.toByte()
+        val slot = dvrSlot(jpeg, frameSizeField = jpeg.size)
+
+        val oneTransfer = DvrFrameParser.blocksForKnownSize(jpeg.size, 1024) * 512
+        assertTrue(oneTransfer >= DvrFrameParser.FRAME_OFFSET + jpeg.size)
+        assertEquals(jpeg.size, DvrFrameParser.extractFrame(slot.copyOf(oneTransfer))!!.size)
+
+        // A frame that grew past the hint's 1 KB of slack is cut off by that same read ...
+        val bigger = ByteArray(8192)
+        bigger[0] = 0xFF.toByte()
+        bigger[1] = 0xD8.toByte()
+        bigger[2] = 0xFF.toByte()
+        bigger[bigger.size - 2] = 0xFF.toByte()
+        bigger[bigger.size - 1] = 0xD9.toByte()
+        val bigSlot = dvrSlot(bigger, frameSizeField = bigger.size)
+        val cut = bigSlot.copyOf(oneTransfer)
+        assertNull(DvrFrameParser.extractFrame(cut))
+
+        // ... so the caller's fallback, sized from the hint inside that very read, recovers it.
+        val fallback = DvrFrameParser.blocksFor(
+            DvrFrameParser.FRAME_OFFSET,
+            DvrFrameParser.frameSizeHint(cut),
+            1024
+        ) * 512
+        assertTrue(fallback > oneTransfer)
+        assertEquals(bigger.size, DvrFrameParser.extractFrame(bigSlot.copyOf(fallback))!!.size)
+    }
+
+    // --------------------------------------------------- remembered detector backend
+
+    @Test
+    fun testProviderMemoryKeepsOneEntryPerFrameSize() {
+        var store = ProviderMemory.put("", "yolov10n-224.onnx@1280x720", "ncnn/Vulkan")
+        assertEquals("ncnn/Vulkan", ProviderMemory.lookup(store, "yolov10n-224.onnx@1280x720"))
+
+        // The DVR streams 1280x720 while a phone's system camera may offer 1920x1080. Each keeps
+        // its own answer, which is the whole point: the old single pair made every switch between
+        // two sizes re-run the multi-second backend benchmark.
+        store = ProviderMemory.put(store, "yolov10n-224.onnx@1920x1080", "onnx(auto)")
+        assertEquals("ncnn/Vulkan", ProviderMemory.lookup(store, "yolov10n-224.onnx@1280x720"))
+        assertEquals("onnx(auto)", ProviderMemory.lookup(store, "yolov10n-224.onnx@1920x1080"))
+
+        // Re-measuring a key replaces its entry and moves it to the front.
+        store = ProviderMemory.put(store, "yolov10n-224.onnx@1280x720", "ncnn/CPU")
+        assertEquals("ncnn/CPU", ProviderMemory.lookup(store, "yolov10n-224.onnx@1280x720"))
+        assertTrue(store.startsWith("yolov10n-224.onnx@1280x720=ncnn/CPU"))
+
+        // Unknown keys, junk lines and empty input are simply absent.
+        assertEquals("", ProviderMemory.lookup(store, "yolov10n-320.onnx@1280x720"))
+        assertEquals("", ProviderMemory.lookup("junk\nnokey", "x"))
+        assertEquals("", ProviderMemory.lookup(store, ""))
+
+        // The store is bounded, and the oldest entry is the one dropped.
+        var bounded = ""
+        for (i in 1..9) bounded = ProviderMemory.put(bounded, "model$i@1280x720", "provider$i")
+        assertEquals(ProviderMemory.MAX_ENTRIES, bounded.split('\n').size)
+        assertEquals("", ProviderMemory.lookup(bounded, "model1@1280x720"))
+        assertEquals("provider9", ProviderMemory.lookup(bounded, "model9@1280x720"))
     }
 }

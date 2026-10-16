@@ -26,6 +26,7 @@ object HudPrefs {
     private const val KEY_DETECT_INTERVAL = "detect_interval_ms"
     private const val KEY_PROVIDER = "detect_provider"
     private const val KEY_PROVIDER_KEY = "detect_provider_key"
+    private const val KEY_PROVIDERS = "detect_providers"
     private const val KEY_CALIB_HEIGHT = "calib_height_m"
     private const val KEY_CALIB_PITCH = "calib_pitch_deg"
     private const val KEY_CALIB_FOV = "calib_fov_deg"
@@ -87,6 +88,9 @@ object HudPrefs {
      * Execution provider that measured fastest last time (e.g. `NNAPI/fp16`). Stored with
      * [detectProviderKey] rather than on its own, because the winner depends on the model and
      * the frame size it was benchmarked against.
+     *
+     * This pair is the *most recent* measurement and is what the HUD displays. Use
+     * [detectProviderFor] to look a backend up for a specific source.
      */
     fun detectProvider(ctx: Context) = sp(ctx).getString(KEY_PROVIDER, "") ?: ""
 
@@ -97,6 +101,32 @@ object HudPrefs {
         .putString(KEY_PROVIDER, provider)
         .putString(KEY_PROVIDER_KEY, key)
         .apply()
+
+    /**
+     * Remembered backend for one `"<model>@<width>x<height>"` key, or "" when unknown.
+     *
+     * The sources do not agree on a frame size - the DVR streams 1280x720, a phone's system
+     * camera may offer 1920x1080 - and with a single stored pair the second source overwrote the
+     * first, so every switch between them re-ran the multi-second backend benchmark. The map
+     * keeps an entry per size (see [ProviderMemory]).
+     */
+    fun detectProviderFor(ctx: Context, key: String): String {
+        if (key.isEmpty()) return ""
+        val fromMap = ProviderMemory.lookup(sp(ctx).getString(KEY_PROVIDERS, "") ?: "", key)
+        if (fromMap.isNotEmpty()) return fromMap
+        // Entries written before the map existed are still honoured once.
+        return if (detectProviderKey(ctx) == key) detectProvider(ctx) else ""
+    }
+
+    fun setDetectProviderFor(ctx: Context, key: String, provider: String) {
+        if (key.isEmpty() || provider.isEmpty()) return
+        val store = sp(ctx).getString(KEY_PROVIDERS, "") ?: ""
+        sp(ctx).edit()
+            .putString(KEY_PROVIDERS, ProviderMemory.put(store, key, provider))
+            .apply()
+        // Keep the display pair in step with the newest measurement.
+        setDetectProvider(ctx, provider, key)
+    }
 
     // ---- ground-distance calibration ------------------------------------
 
@@ -159,4 +189,48 @@ object HudPrefs {
     fun wifiUrl(ctx: Context): String =
         sp(ctx).getString(KEY_WIFI_URL, "http://192.168.1.100:8080/video") ?: "http://192.168.1.100:8080/video"
     fun setWifiUrl(ctx: Context, url: String) = sp(ctx).edit().putString(KEY_WIFI_URL, url).apply()
+}
+
+/**
+ * The remembered detector backends, stored as newline-separated `key=provider` entries with the
+ * newest first.
+ *
+ * Kept as plain string handling (rather than a `Map` in code) so it survives in
+ * SharedPreferences and can be unit tested without an Android context.
+ */
+internal object ProviderMemory {
+
+    /** Enough for a few models at a few frame sizes; the least recently used entry is dropped. */
+    const val MAX_ENTRIES = 6
+
+    private const val SEPARATOR = '\n'
+
+    /** The provider remembered for [key], or "" when there is none. */
+    fun lookup(store: String, key: String): String {
+        if (store.isEmpty() || key.isEmpty()) return ""
+        for (line in store.split(SEPARATOR)) {
+            val eq = line.indexOf('=')
+            if (eq <= 0) continue
+            if (line.substring(0, eq) == key) return line.substring(eq + 1)
+        }
+        return ""
+    }
+
+    /**
+     * Returns [store] with [key]=[provider] as the newest entry. An existing entry for the same
+     * key is replaced, and the store is trimmed to [MAX_ENTRIES] from the front (the newest).
+     */
+    fun put(store: String, key: String, provider: String, maxEntries: Int = MAX_ENTRIES): String {
+        if (key.isEmpty() || provider.isEmpty()) return store
+        val entries = LinkedHashMap<String, String>()
+        entries[key] = provider
+        for (line in store.split(SEPARATOR)) {
+            val eq = line.indexOf('=')
+            if (eq <= 0) continue
+            val k = line.substring(0, eq)
+            if (!entries.containsKey(k)) entries[k] = line.substring(eq + 1)
+            if (entries.size >= maxEntries) break
+        }
+        return entries.entries.joinToString(SEPARATOR.toString()) { "${it.key}=${it.value}" }
+    }
 }

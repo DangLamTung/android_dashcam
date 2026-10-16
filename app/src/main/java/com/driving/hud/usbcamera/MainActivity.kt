@@ -174,18 +174,19 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
         // native init, and paying it here beats showing live video with no boxes for 7 s.
         cameraManager.prewarmDetector()
 
-        // The "U2 DVR" is a mass-storage dashcam (not UVC): its live preview is a
-        // file on the DVR's own card. Log what that volume holds; the deeper USB
-        // probe claims the interface, so it only runs when explicitly requested.
-        val dvrUsbProbe = intent?.getBooleanExtra(EXTRA_DVR_PROBE, false) == true
-        Thread {
-            runCatching { DvrVolume.probe(applicationContext) }
-                .onFailure { HudLogger.e(TAG, "DVR volume probe failed", it) }
-            if (dvrUsbProbe) {
+        // The "U2 DVR" is a mass-storage dashcam (not UVC). Both probes below are diagnostics:
+        // the volume probe walks the DVR's own card, and the USB probe *claims the interface*,
+        // which detaches usb-storage and unmounts that card. Neither belongs in a normal start-up,
+        // so they only run when explicitly requested with DVR_PROBE=true (see tools/debug_tablet.sh).
+        val dvrProbe = intent?.getBooleanExtra(EXTRA_DVR_PROBE, false) == true
+        if (dvrProbe) {
+            Thread {
+                runCatching { DvrVolume.probe(applicationContext) }
+                    .onFailure { HudLogger.e(TAG, "DVR volume probe failed", it) }
                 runCatching { DvrUsbProbe.probe(applicationContext) }
                     .onFailure { HudLogger.e(TAG, "DVR USB probe failed", it) }
-            }
-        }.start()
+            }.start()
+        }
 
         setupHomeControls()
         setupHudControls()

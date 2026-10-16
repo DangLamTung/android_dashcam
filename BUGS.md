@@ -1,66 +1,92 @@
 # Bug list
 
-Findings from on-device testing and code review of the multi-source camera work (`65fa9b1` and the
-fixes on top of it). Every entry is verifiable — either by reading the code path named in it, or by
-reproducing it on the Lenovo TB331FC with `tools/debug_tablet.sh`.
+Findings from on-device testing and code review of the multi-source camera work. Every entry is
+verifiable — by reading the code path named in it, or by reproducing it on the Lenovo TB331FC with
+`tools/debug_tablet.sh`.
 
-Legend: **🔴 high** (blocks or freezes the UI) · **🟠 medium** (wrong behaviour / wasted battery) ·
+Severity: **🔴 high** (blocks or freezes the UI) · **🟠 medium** (wrong behaviour / wasted CPU) ·
 **🟡 low** (robustness, cosmetics).
 
----
-
-## Fixed — detector start-up cost (2026-10-16)
-
-The report that started this: *at start-up there is a stretch where the CPU is pegged at 200 %+ and
-the model gets loaded again*. All four entries below feed the same defect — the JPEG sources
-(WiFi MJPEG and the U2 DVR) built a detector the worst possible way.
-
-| # | Severity | Bug | Evidence | Fix |
-| :-- | :-- | :--- | :--- | :--- |
-| 1 | 🔴 | **Detection toggle ignored by the JPEG sources.** With *Detect objects* switched off in Settings, the WiFi/DVR path still built a detector and still ran inference on every frame — the switch only affected the USB and System paths. | `MjpegFrameSink.isDetDue` had no `HudPrefs.detect` check, unlike `SystemCameraController.kt:518` and `AusbcCameraController.kt:771`. Tablet prefs had `detect_interval_ms=0`, i.e. a pass on **every** frame when the switch was off. | `MjpegFrameSink` now checks `HudPrefs.detect(context)` both in `initDetector()` (no session is built at all) and per frame in `isDetDue`. |
-| 2 | 🔴 | **Backend shoot-out ran inline on the UI thread.** `open()` → `sink.prepare()` → `DetectorFactory.create(..., only = null)` did a first-run benchmark of every backend on the main thread. | Tablet log: `15:50:32.833 onResume` → `15:50:46.658` winner rebuilt → `15:50:46.659 Connected`. **13.8 s of main-thread work**, i.e. an ANR for the first tap; several native threads saturate every core for the whole stretch — the 200 %+ CPU. | The sink now builds on its `inferExecutor` with a generation guard, so the UI keeps rendering and a build that finishes after the source closed is discarded. |
-| 3 | 🔴 | **The winning backend was never remembered for the JPEG sources.** `DetectorFactory.create(..., only = null)` always meant "measure everything", so the shoot-out — load ncnn (4.5 MB) **and** ONNX (9 MB), time them, then load ncnn again to rebuild the winner — re-ran on every connect, for a result that never changes. | `MjpegFrameSink.kt:87` passed `null`; the USB and System paths pass the remembered provider and store it with `HudPrefs.setDetectProvider`. | Reuses `detectProviderKey`/`detectProvider` the same way (`"<model>@<w>x<h>"`), and remembers the winner when the shoot-out is genuinely needed (new model or frame size). |
-| 4 | 🟠 | **No prewarm for the JPEG sources.** Even a reused session costs seconds of native init, and it landed on the first frame. | `CameraCoordinator.prewarmDetector()` only handled `MODE_SYSTEM`. | `prewarmDetector()` now covers `MODE_WIFI` and `MODE_DVR`, so the session is built from `onCreate` while the home screen is showing. |
-
-**Residual cost, accepted:** the shoot-out still loads ncnn twice when ncnn wins — every candidate is
-closed before the next is built, because two live ncnn sessions fault inside
-`ncnn::Extractor::extract` with this libncnn build. With #3 in place that only happens once per
-model + frame size instead of on every connect.
-
-**Residual cost, open:** `detect_provider` / `detect_provider_key` is a single global pair, so a
-source that negotiates a different frame size (say a 1920×1080 system camera) overwrites the DVR's
-1280×720 entry and switching back re-runs the shoot-out. Fix sketch: store a small map keyed by
-model + size instead of one pair.
+Status: **✅ fixed and verified on hardware** · **🟨 fixed, needs one more on-device run** ·
+**⬜ open**
 
 ---
 
-## Open
+## Fixed — detector start-up cost
 
-| # | Severity | Bug | Where | Notes |
-| :-- | :-- | :--- | :--- | :--- |
-| 5 | 🟠 | `locateSlot()` never checks `running`, so `close()` cannot stop it: 9 candidate slots plus a 16 MB scan in 128-block steps (up to 256 BOT round trips, 1000 ms timeout each) can outlive the `join(1500)`. The stream then keeps talking to a connection that is being closed. | `DvrUsbCameraController.locateSlot()` | Add `if (!running) return false` inside the scan loop. |
-| 6 | 🔴 | A pulled cable or a DVR mode change is never reported: `readFrame()` returns null, `streamLoop` sleeps 60 ms and retries — and each retry re-runs the **whole** slot search. No `listener.onError()` / `onDisconnected()`, and unlike the UVC path there is no detach receiver for the DVR at all. | `DvrUsbCameraController.streamLoop()` | Count consecutive failures (or watch for `UsbManager` detach) and surface an error instead of spinning. |
-| 7 | 🟠 | `close()` blocks the caller for up to 1.5 s, and the callers are `CameraCoordinator.switchMode()` and `onAppBackgrounded()` — both on the UI thread. | `DvrUsbCameraController.close()` (`thread?.join(1500)`) | Join off the main thread, or rely on the `running` flag plus #5. |
-| 8 | 🟡 | A short or aborted `READ(10)` data phase leaves Bulk-Only Transport desynchronised — no `clearHalt()` and no Bulk-Only Mass Storage Reset, so every later command can fail until the DVR is physically re-plugged. | `DvrBot.read10()` | On `received < length`, run the BOT reset sequence before the next command. |
-| 9 | 🟡 | `DvrBot.read10()` allocates a fresh `ByteArray` per call, and every frame costs **two** round trips (~75–80 ms each) because the slot body read re-reads the 16 KB header. That is ~92 KB and two transfers per frame at 14–17 fps. | `DvrBot.read10()` / `DvrUsbCameraController.readFrame()` | Pool the buffer and derive the body read from the header read so a frame costs one transfer. |
-| 10 | 🟡 | `DvrVolume.probe()` runs on **every** app start, whatever the camera source. The expensive part (a tree walk of the DVR volume, a 512 KB sample, a 3 s sleep) only happens when a mounted volume actually holds `VSFILE`, but the probe itself is unconditional. | `MainActivity.onCreate` | Gate it behind the existing `DVR_PROBE` extra, like `DvrUsbProbe`. |
-| 11 | 🟠 | `MANAGE_EXTERNAL_STORAGE` is declared for the DVR **volume diagnostics** only — the streaming path reads MJPEG over USB Bulk-Only Transport and needs no storage access at all. Google Play restricts that permission to file managers, backup and antivirus apps and rejects the rest. | `AndroidManifest.xml` | Needs a decision: move the diagnostics (and the permission) to a debug-only manifest, or drop the volume probe. |
-| 12 | 🟡 | Stale-frame handling advances the slot when two consecutive polls return identical JPEG bytes. `contentHashCode()` really is content-based, and the DVR burns a 1-second OSD clock into every frame, so in practice the bytes change at least once a second and the measured 14–17 fps delivery is smooth. Only two genuinely identical frames would skip a slot. | `DvrUsbCameraController.readFrame()` | Low priority; a frame counter in the slot header would make it exact. |
+The report that started this: *at start-up there is a stretch above 200 % CPU where the model gets
+loaded again*. Four defects fed one symptom.
+
+| # | Sev | Bug | Evidence | Fix | Status |
+| :-- | :-- | :--- | :--- | :--- | :-- |
+| 1 | 🔴 | **Detection toggle ignored by the JPEG sources.** With *Detect objects* off, the WiFi/DVR path still built a detector and still ran inference on every frame; the switch only affected the USB and System paths. | `MjpegFrameSink.isDetDue` had no `HudPrefs.detect` check, unlike `SystemCameraController` and `AusbcCameraController`. Tablet prefs had `detect_interval_ms=0`, i.e. a pass per frame. | Checks `HudPrefs.detect` in `initDetector()` (no session built at all) and per frame in `isDetDue`. | ✅ `detection disabled in settings — running preview only`, **0** model-load lines, CPU ~0 % |
+| 2 | 🔴 | **Backend shoot-out ran inline on the UI thread.** `open()` → `sink.prepare()` → `DetectorFactory.create(..., only = null)` benchmarked every backend on the main thread. | Tablet log: `15:50:32.833 onResume` → `15:50:46.658` winner rebuilt → `15:50:46.659 Connected`. **13.8 s of main-thread work** — an ANR for the first tap, with every core saturated. | Builds on the sink's `inferExecutor` behind a generation guard; the UI keeps running and a late build is discarded. | ✅ `onStart`/`onResume` on time while the single load runs in the background; CPU peaked at 97 % of **one** core |
+| 3 | 🔴 | **The winning backend was never remembered for the JPEG sources.** `only = null` re-ran the shoot-out — load ncnn (4.5 MB) *and* ONNX (9 MB), then load ncnn again for the winner — on every connect. | `MjpegFrameSink` passed `null`; the USB and System paths pass the remembered provider. | Reuses and stores the backend per model + frame size via `HudPrefs.detectProviderFor` / `setDetectProviderFor`. | ✅ `reusing detector backend 'ncnn/Vulkan' for yolov10n-224.onnx@1280x720 (skipping benchmark)`, one model load, no ONNX load, no shoot-out |
+| 4 | 🟠 | **No prewarm for the JPEG sources**, so even a reused session landed on the first frame. | `CameraCoordinator.prewarmDetector()` only handled `MODE_SYSTEM`. | Covers `MODE_WIFI` and `MODE_DVR`: the session is built from `onCreate` while the home screen is up. | ✅ (the reuse line above is logged before `onResume`) |
+
+**Also fixed here:** `detect_provider` / `detect_provider_key` was a **single** global pair, so two
+sources that negotiate different frame sizes — the DVR's 1280×720 and, say, a 1920×1080 system
+camera — overwrote each other, and every switch between them re-ran the benchmark. They are now a
+bounded per-size map (newest first), with the old pair still honoured once so an existing install
+keeps its remembered backend. Covered by `testProviderMemoryKeepsOneEntryPerFrameSize`.
+
+---
+
+## Fixed — DVR robustness pass
+
+| # | Sev | Bug | Where | Fix | Status |
+| :-- | :-- | :--- | :--- | :--- | :-- |
+| 5 | 🟠 | `locateSlot()` never checked `running`, so `close()` could not stop a sweep: 9 candidate slots plus a 16 MB scan in 128-block steps (up to 256 SCSI transfers) could outlive `join(1500)`, leaving the thread talking to a connection that was being closed. | `DvrUsbCameraController.locateSlot()` | Checks `running` in both loops, and failed sweeps are rate limited to one per second so a dead DVR is not hammered. | 🟨 |
+| 6 | 🔴 | A pulled cable was never reported: `readFrame()` returned null, the loop slept 60 ms and re-ran the **whole** slot search forever, with no `onError`/`onDisconnected` (and unlike the UVC path there was no detach receiver for the DVR). | `DvrUsbCameraController` | Registers `ACTION_USB_DEVICE_DETACHED`, so an unplug closes and reports `onDisconnected` immediately; 20 empty polls report a status, 60 raise `onError` once, then retries continue at 500 ms so a temporary stall recovers by itself. | 🟨 |
+| 7 | 🟠 | `close()` blocked the caller for up to 1.5 s (`thread?.join(1500)`), and the callers are `switchMode()` / `onAppBackgrounded()` — the UI thread. | `DvrUsbCameraController.close()` | `close()` only signals now; the **reader** releases the interface and connection in its `finally`, so the UI never waits. `open()` joins a lingering reader with a bounded 800 ms timeout, which is only reachable when a mode is switched twice inside one transfer. | 🟨 |
+| 8 | 🟡 | A short or aborted `READ(10)` data phase left Bulk-Only Transport desynchronised — no reset, so every later command failed until the DVR was physically re-plugged. | `DvrBot.read10()` | On a short data phase or a failed CSW it runs the class-specific **Bulk-Only Mass Storage Reset** followed by CLEAR_FEATURE(HALT) on both endpoints (`UsbDeviceConnection` has no `clearHalt`, so it is the raw control request). | 🟨 |
+| 9 | 🟡 | Every frame cost **two** round trips (~75–80 ms each) because the body read re-read the 16 KB header, and each read allocated a fresh ~90 KB array at ~15 fps. | `DvrBot` / `DvrUsbCameraController.readFrame()` | A frame is read into **one** pooled buffer, sized from the previous frame's header hint, and the header comes out of that same read. A frame that grew past the hint's 1 KB slack (or a mid-write slot) falls back to a single re-read sized from the fresh hint. Covered by `testDvrSingleTransferReadCoversAndFallsBack`. | 🟨 |
+| 10 | 🟡 | `DvrVolume.probe()` ran on **every** app start whatever the source: volume enumeration, tree walk, 512 KB sample, 3 s sleep. | `MainActivity.onCreate` | Both DVR probes (volume *and* USB) now need the `DVR_PROBE` extra, like the USB one already did. | ✅ no `DvrVolume`/`DvrUsbProbe` lines in a normal start-up |
+| 11 | 🟠 | `MANAGE_EXTERNAL_STORAGE` was declared for the DVR **volume diagnostics** only — the streaming path needs no storage access at all — and Google Play rejects that permission outside file managers, backup and antivirus apps. | `AndroidManifest.xml` | Moved to `app/src/debug/AndroidManifest.xml`, so release builds no longer request it. | ✅ manifest-level |
+| 12 | 🟡 | Stale-frame handling advanced the ring when two consecutive polls returned identical JPEG bytes. `contentHashCode()` really is content-based and the DVR burns a 1 Hz OSD clock into every frame, so duplicates only occur inside one second — but a burst could skip several records. | `DvrUsbCameraController.readFrame()` | The advance is rate limited (≥30 ms since the last jump) and every target is still validated as a slot header. | 🟨 |
+
+🟨 = code is in, compiles, unit tests green — but the DVR was in a degraded USB state
+(`product_name=null`, `num_connects=66`) while these were checked, so the streaming path needs one
+more run with the DVR freshly plugged in.
+
+---
+
+## Known residuals (accepted, documented)
+
+- **The shoot-out still loads ncnn twice when ncnn wins.** Every candidate is torn down before the
+  next is built, because two live ncnn sessions fault inside `ncnn::Extractor::extract` with this
+  libncnn build. It now happens once per model + frame size instead of on every connect.
+- **A reused session still costs seconds of native init** (model load plus Vulkan pipelines). That is
+  what the prewarm is for; it is now paid while the home screen is showing.
+- **`open()` can wait up to 800 ms** for a previous reader to hand the interface back — only when a
+  mode is switched twice within a single USB transfer.
 
 ---
 
 ## Reviewed and rejected (not bugs)
 
-Checked against the code and the device logs, so they are not carried in the list above:
+Checked against the code and the device logs, so they are not carried above:
 
 - **"`WifiCameraController` self-joins and blocks for 1 s"** — `close()` calls
   `streamThread?.interrupt()` and nulls it; there is no `join` anywhere in that file. The only joins
-  in the app are `DvrUsbCameraController.kt:279`, `UsbCameraManager.kt:1129` and
-  `MkvRecorder.kt:290`, none of which run on their own thread.
+  in the app are in `DvrUsbCameraController`, `UsbCameraManager` and `MkvRecorder`, none of which run
+  on their own thread.
 - **"The DVR never auto-connects when plugged in"** — `MainActivity` declares
   `USB_DEVICE_ATTACHED` with the `device_filter` meta-data and handles it in `onNewIntent` →
-  `scanAndConnect()` → `dvrController.open()`. The `device_filter.xml` entry for
-  `6402:12865` added in `65fa9b1` is exactly what makes the attach intent arrive at our app.
-- **"`read10` churns 12–15 MB/s"** — a frame read is `blocksFor()` ≈ 149 blocks ≈ 76 KB plus the
-  16 KB header, so ~92 KB per frame, ~1.5 MB/s at 14–17 fps. Worth pooling (see #9), but an order of
-  magnitude below the reported figure.
+  `scanAndConnect()` → `dvrController.open()`. The `device_filter.xml` entry for `6402:12865` is
+  exactly what makes the attach intent arrive at our app.
+- **"`read10` churns 12–15 MB/s"** — a frame read is ≈149 blocks ≈ 76 KB plus the 16 KB header, so
+  ~92 KB per frame, ~1.5 MB/s at 15 fps. Worth pooling (see #9), an order of magnitude below the
+  reported figure.
+
+---
+
+## Device notes found while verifying
+
+- The U2 DVR flaps (`num_connects` climbing, `product_name=null`, so it stops matching
+  `VID 0x1902 / PID 0x3241` and the app reports "U2 DVR not connected") whenever the vendor app
+  `com.fvision.camera` is enabled — it grabs the interface on every attach. **The Lenovo's own
+  "AutoRun" service re-enabled it after we disabled it**, so `pm disable-user --user 0
+  com.fvision.camera` may need repeating after a reboot or a reinstall.
+- The tablet's `/sys/bus/usb/devices` is not readable from `adb shell` (SELinux), so a degraded DVR
+  cannot be re-enumerated in software — it needs a physical replug.
