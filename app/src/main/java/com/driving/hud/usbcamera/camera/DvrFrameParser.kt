@@ -50,9 +50,11 @@ object DvrFrameParser {
     }
 
     /** First SOI within [slack] bytes of [at], or -1. */
-    private fun soiNear(data: ByteArray, at: Int, slack: Int): Int =
-        firstSoiFrom(data, (at - slack).coerceAtLeast(0))
-            .takeIf { it in (at - slack).coerceAtLeast(0)..(at + slack) }
+    private fun soiNear(data: ByteArray, at: Int, slack: Int): Int {
+        val from = (at - slack).coerceAtLeast(0)
+        val found = firstSoiFrom(data, from)
+        return if (found in from..(at + slack)) found else -1
+    }
 
     /** End offset (exclusive) of the first EOI at or after [from], or -1. */
     fun firstEoi(data: ByteArray, from: Int): Int {
