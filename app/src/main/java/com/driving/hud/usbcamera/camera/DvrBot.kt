@@ -40,6 +40,13 @@ class DvrBot(
         const val TAG_VALUE = 0x74b4ea50
         const val BLOCK = 512
 
+        /**
+         * Maximum transfer buffer size for UsbDeviceConnection.bulkTransfer() under Linux usbfs
+         * (USBDEVFS_BULK ioctl enforces MAX_USBFS_BUFFER_SIZE = 16384 bytes). Transfers larger
+         * than this fail immediately with -EINVAL on Android targetSdk >= 28, wedging the BOT pipe.
+         */
+        const val MAX_USBFS_BUFFER_SIZE = 16384
+
         /** Class-specific Bulk-Only Mass Storage Reset (bmRequestType 0x21, bRequest 0xFF). */
         const val BOT_RESET_REQUEST_TYPE = 0x21
         const val BOT_RESET_REQUEST = 0xFF
@@ -117,14 +124,16 @@ class DvrBot(
      * crash: report it as a failed transfer.
      */
     private fun bulkIn(buffer: ByteArray, offset: Int, length: Int): Int = try {
-        connection.bulkTransfer(inEndpoint, buffer, offset, length, timeoutMs)
+        val chunk = minOf(length, MAX_USBFS_BUFFER_SIZE)
+        connection.bulkTransfer(inEndpoint, buffer, offset, chunk, timeoutMs)
     } catch (t: Throwable) {
         HudLogger.w(TAG, "bulk IN failed: ${t.message}")
         -1
     }
 
     private fun bulkOut(buffer: ByteArray, offset: Int, length: Int): Int = try {
-        connection.bulkTransfer(outEndpoint, buffer, offset, length, timeoutMs)
+        val chunk = minOf(length, MAX_USBFS_BUFFER_SIZE)
+        connection.bulkTransfer(outEndpoint, buffer, offset, chunk, timeoutMs)
     } catch (t: Throwable) {
         HudLogger.w(TAG, "bulk OUT failed: ${t.message}")
         -1
@@ -235,9 +244,13 @@ class DvrBot(
         if (!sendCbw(buildCbw(readCdb(lba, blocks), length, dataIn = true))) return -1
         var received = 0
         while (received < length) {
-            val n = bulkIn(buffer, received, length - received)
+            val toRead = minOf(length - received, MAX_USBFS_BUFFER_SIZE)
+            val n = bulkIn(buffer, received, toRead)
             if (n <= 0) break
             received += n
+        }
+        if (received != length) {
+            HudLogger.w(TAG, "read10 data stalled at $received/$length")
         }
         // Always consume the CSW, even when the data phase came up short: the device sends it
         // either way (its residue field reports the shortfall), and leaving it in the pipe is
@@ -276,9 +289,13 @@ class DvrBot(
         if (!sendCbw(buildCbw(cdb, length, dataIn = false))) return false
         var sent = 0
         while (sent < length) {
-            val n = bulkOut(payload, sent, length - sent)
+            val toSend = minOf(length - sent, MAX_USBFS_BUFFER_SIZE)
+            val n = bulkOut(payload, sent, toSend)
             if (n <= 0) break
             sent += n
+        }
+        if (sent != length) {
+            HudLogger.w(TAG, "write10 data stalled at $sent/$length")
         }
         // Same rule as read10Into: the CSW has to be consumed whatever the data phase did.
         lastStatus = readCsw()

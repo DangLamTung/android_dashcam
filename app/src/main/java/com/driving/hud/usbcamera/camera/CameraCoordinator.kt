@@ -74,7 +74,7 @@ class CameraCoordinator(
                 val url = HudPrefs.wifiUrl(context)
                 wifiController.open(url)
             }
-            HudPrefs.MODE_DVR -> dvrController.open()
+            HudPrefs.MODE_DVR -> dvrController.open(forcePermission)
         }
     }
 

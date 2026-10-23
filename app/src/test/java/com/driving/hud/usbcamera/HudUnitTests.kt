@@ -565,6 +565,22 @@ class HudUnitTests {
         assertEquals(bigger.size, DvrFrameParser.extractFrame(bigSlot.copyOf(fallback))!!.size)
     }
 
+    @Test
+    fun testDvrBotChunkingMath() {
+        val totalBytes = 128 * 512 // 65536 bytes (typical 128-block frame read)
+        val chunkSize = 16384 // MAX_USBFS_BUFFER_SIZE
+        var received = 0
+        val chunks = mutableListOf<Int>()
+        while (received < totalBytes) {
+            val toRead = minOf(totalBytes - received, chunkSize)
+            chunks.add(toRead)
+            received += toRead
+        }
+        assertEquals(4, chunks.size)
+        assertTrue(chunks.all { it <= chunkSize })
+        assertEquals(totalBytes, chunks.sum())
+    }
+
     // --------------------------------------------------- remembered detector backend
 
     @Test

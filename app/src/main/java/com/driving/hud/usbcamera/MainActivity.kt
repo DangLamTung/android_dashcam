@@ -1202,7 +1202,7 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
         HudLogger.i(TAG, "onNewIntent: ${intent.action}")
         if (intent.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) {
             HudLogger.i(TAG, "onNewIntent: USB device attached")
-            cameraManager.scanAndConnect()
+            cameraManager.scanAndConnect(forcePermission = true)
         }
         if (intent.getBooleanExtra(EXTRA_START_CALIBRATION, false)) {
             binding.root.post { enterCalibration() }

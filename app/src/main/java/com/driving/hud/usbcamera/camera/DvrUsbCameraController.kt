@@ -187,6 +187,8 @@ class DvrUsbCameraController(
 
     private var permissionReceiver: android.content.BroadcastReceiver? = null
     private var deviceStateReceiver: android.content.BroadcastReceiver? = null
+    private var permissionRequestPending = false
+    private var permissionDenied = false
 
     /**
      * USB access is granted through a system dialog, so the source has to finish opening
@@ -199,7 +201,14 @@ class DvrUsbCameraController(
                 val granted = intent?.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false) == true
                 HudLogger.i(TAG, "USB permission result: granted=$granted")
                 unregisterPermissionReceiver()
-                if (granted) open() else listener.onError("USB access to the U2 DVR was denied")
+                permissionRequestPending = false
+                if (granted) {
+                    permissionDenied = false
+                    open(forcePermission = true)
+                } else {
+                    permissionDenied = true
+                    listener.onError("USB access to the U2 DVR was denied")
+                }
             }
         }
         androidx.core.content.ContextCompat.registerReceiver(
@@ -214,6 +223,7 @@ class DvrUsbCameraController(
     private fun unregisterPermissionReceiver() {
         val rx = permissionReceiver ?: return
         permissionReceiver = null
+        permissionRequestPending = false
         runCatching { context.unregisterReceiver(rx) }
     }
 
@@ -233,6 +243,9 @@ class DvrUsbCameraController(
                 )
                 if (device == null || !DvrVolume.matches(device.vendorId, device.productId)) return
                 HudLogger.w(TAG, "U2 DVR unplugged")
+                permissionDenied = false
+                permissionRequestPending = false
+                badSlots.clear()
                 val wasStreaming = isOpen
                 close()
                 if (wasStreaming) listener.onDisconnected()
@@ -271,7 +284,11 @@ class DvrUsbCameraController(
         return usb.hasPermission(device)
     }
 
-    fun open() {
+    fun open(forcePermission: Boolean = false) {
+        if (forcePermission) {
+            permissionDenied = false
+            badSlots.clear()
+        }
         // A session that is already streaming wins; otherwise wait for the previous one to hand
         // the interface back before claiming it again.
         if (isOpen) return
@@ -320,8 +337,18 @@ class DvrUsbCameraController(
             return
         }
         if (!usb.hasPermission(device)) {
+            if (permissionRequestPending) {
+                HudLogger.w(TAG, "USB permission request already pending — debounced")
+                return
+            }
+            if (permissionDenied && !forcePermission) {
+                HudLogger.i(TAG, "USB permission previously denied — waiting for user to tap Connect")
+                listener.onStatusChanged("U2 DVR: grant USB access to start")
+                return
+            }
+            permissionRequestPending = true
             listener.onStatusChanged("U2 DVR: grant USB access to start")
-            HudLogger.i(TAG, "No USB permission yet - requesting it")
+            HudLogger.i(TAG, "No USB permission yet - requesting it (forcePermission=$forcePermission)")
             registerPermissionReceiver()
             DvrUsbProbe.requestPermission(context)
             return
@@ -415,6 +442,7 @@ class DvrUsbCameraController(
     private fun reclaim(): Boolean {
         if (!running) return false
         HudLogger.w(TAG, "re-claiming the DVR interface after a stall")
+        badSlots.clear()
         releaseStreaming()
         val usb = context.getSystemService(Context.USB_SERVICE) as? UsbManager ?: return false
         val device = DvrUsbProbe.findDevice(context) ?: return false
@@ -787,6 +815,7 @@ class DvrUsbCameraController(
         // interface in [releaseStreaming]; open() waits for that before claiming it again.
         val hadReader = thread != null
         running = false
+        permissionRequestPending = false
         unregisterPermissionReceiver()
         if (!hadReader) releaseStreaming()
         isOpen = false
