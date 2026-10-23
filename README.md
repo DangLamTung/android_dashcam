@@ -168,10 +168,25 @@ This repository includes a fully automated GitHub Actions workflow (`.github/wor
 
 To create a release:
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.0.4
+git push origin v1.0.4
 ```
 GitHub Actions will automatically build, package, and publish the release.
+
+#### Release signing
+Every release APK must be signed with the same key, otherwise a new APK refuses to install
+over an older one (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`) and users have to uninstall first.
+
+The keystore is **not** committed. CI restores it from two repository secrets:
+
+| Secret | Contents |
+| --- | --- |
+| `RELEASE_KEYSTORE_BASE64` | `openssl base64 -A -in release.jks` |
+| `RELEASE_KEYSTORE_PROPERTIES` | The four lines of `keystore.properties` |
+
+The workflow verifies the built APK with `apksigner` and **fails before publishing** if the
+APK turns out to be signed with the debug key. Keep `release.jks` and `keystore.properties`
+backed up somewhere safe: losing the key means the app can never be updated in place again.
 
 ---
 

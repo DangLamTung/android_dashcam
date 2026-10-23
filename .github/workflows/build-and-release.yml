@@ -58,6 +58,22 @@ jobs:
       - name: Make Gradlew Executable
         run: chmod +x ./gradlew
 
+      # The release key is never committed. Restoring it from repository secrets keeps the
+      # signing certificate stable across builds, so a new APK installs over an older one
+      # instead of failing with INSTALL_FAILED_UPDATE_INCOMPATIBLE.
+      - name: Restore Release Signing Material
+        env:
+          KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          KEYSTORE_PROPERTIES: ${{ secrets.RELEASE_KEYSTORE_PROPERTIES }}
+        run: |
+          if [[ -z "$KEYSTORE_BASE64" || -z "$KEYSTORE_PROPERTIES" ]]; then
+            echo "::warning::RELEASE_KEYSTORE_BASE64 / RELEASE_KEYSTORE_PROPERTIES are not set." \
+                 "The release APK will be signed with a throwaway debug key."
+            exit 0
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > release.jks
+          printf '%s\n' "$KEYSTORE_PROPERTIES" > keystore.properties
+
       - name: Run Unit Tests
         run: ./gradlew testDebugUnitTest --stacktrace
 
@@ -71,6 +87,24 @@ jobs:
         run: |
           ls -la app/build/outputs/apk/release/
           ls -la app/build/outputs/apk/debug/
+
+      # A debug-signed APK cannot be installed over an earlier release, so it must never be
+      # published. Debug-signed builds are still tolerated for pull requests.
+      - name: Verify Release APK Is Not Debug-Signed
+        env:
+          PUBLISHING: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.create_release) }}
+        run: |
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)
+          DN=$("$APKSIGNER" verify --print-certs app/build/outputs/apk/release/app-release.apk \
+                | grep -m1 'certificate DN' || true)
+          echo "Release signer: ${DN:-<unreadable>}"
+          if echo "$DN" | grep -qi 'CN=Android Debug'; then
+            if [[ "$PUBLISHING" == "true" ]]; then
+              echo "::error::Release APK is debug-signed; publishing it would break in-place updates."
+              exit 1
+            fi
+            echo "::warning::Release APK is debug-signed (acceptable for this non-release build)."
+          fi
 
       - name: Upload Release APK Artifact
         uses: actions/upload-artifact@v4
