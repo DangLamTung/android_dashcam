@@ -35,6 +35,7 @@
     -->
 
     <application
+        android:name=".HudApplication"
         android:allowBackup="true"
         android:usesCleartextTraffic="true"
         android:icon="@mipmap/ic_launcher"

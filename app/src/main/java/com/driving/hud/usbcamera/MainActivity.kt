@@ -46,6 +46,7 @@ import com.driving.hud.usbcamera.camera.Telemetry
 import com.driving.hud.usbcamera.calib.PinholeDistanceEstimator
 import com.driving.hud.usbcamera.detect.Detection
 import com.driving.hud.usbcamera.util.BatteryTracker
+import com.driving.hud.usbcamera.util.CrashReporter
 import com.driving.hud.usbcamera.util.HudLogger
 import com.driving.hud.usbcamera.util.HudPrefs
 
@@ -1165,6 +1166,7 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
         cameraManager.unregister()
         cameraManager.destroy()
         CameraNativeBridge.nativeRelease()
+        CrashReporter.endSession(this)
         HudLogger.close()
     }
 

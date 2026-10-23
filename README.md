@@ -190,6 +190,20 @@ backed up somewhere safe: losing the key means the app can never be updated in p
 
 ---
 
+## 🧪 Diagnostics & Crash Reports
+
+While the app runs, the camera occupies the phone's USB port, so `adb logcat` is usually
+unavailable. Crash information is therefore written where a file manager can reach it:
+
+- **Crash reports** land in `Download/HUD/crash-*.txt`. A Java exception is captured by an
+  uncaught-exception handler; a run that dies without one (native crash, low-memory kill)
+  is detected on the *next* launch and written as `crash-previous-run-*.txt`. Both include
+  device build info, the kernel page size and the last 400 lines of `hud.log`.
+- **Live log**: the **Log** button on the Home screen shares
+  `Android/data/com.driving.hud.usbcamera/files/logs/hud.log`.
+
+---
+
 ## 🎯 Usage & Calibration
 
 1. **Connect Camera**:
