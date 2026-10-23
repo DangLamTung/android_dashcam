@@ -87,12 +87,6 @@ class DvrUsbCameraController(
          */
         const val MAX_STALE_ADVANCES = 8
 
-        /** Vendor mode-switch request (bmRequestType 0x42, bRequest 0x00, 1-byte payload). */
-        const val MODE_REQUEST_TIMEOUT_MS = 500
-
-        /** Pause after the mode switch, so the firmware has acted on it before the first command. */
-        const val MODE_SWITCH_SETTLE_MS = 400L
-
         /**
          * Bounds on a believable `frame size` header field. A garbage value must not turn every
          * poll into a 512 KB read: this DVR resents large transfers.
@@ -352,17 +346,11 @@ class DvrUsbCameraController(
                 "bulk in=0x%02x out=0x%02x".format(inEp.address, outEp.address),
         )
         val newBot = DvrBot(conn, outEp, inEp, iface.id, STREAM_TIMEOUT_MS)
-        // Switch the DVR out of card-reader mode before any SCSI traffic. In card-reader mode it
-        // serves the single static JPEG that sits in VSFILE, which is exactly the "one image and
-        // never updates" behaviour observed on the phone: eight consecutive ring slots all held
-        // the same frame. The vendor app issues this request before it starts reading, and
-        // DvrUsbProbe has always sent it - the streaming path never did.
-        val mode = runCatching {
-            conn.controlTransfer(0x42, 0x00, 0, 0, byteArrayOf(1), 1, MODE_REQUEST_TIMEOUT_MS)
-        }.getOrDefault(-1)
-        HudLogger.i(TAG, "changeMode(1) -> $mode")
-        // Give the firmware a moment to act on it before the first command.
-        Thread.sleep(MODE_SWITCH_SETTLE_MS)
+        // Do NOT send the vendor's changeMode request here. It was tried in v1.0.8 as
+        // controlTransfer(0x42, 0x00, 0, 0, {1}) and the DVR answers -1 every time, after which
+        // the first read stalls within 30 ms - v1.0.7 delivered one frame, v1.0.8 delivered none.
+        // The mode switch therefore does not exist on this mass-storage interface; the vendor app
+        // changes mode through the HWC command file on the mounted card instead.
         // READ CAPACITY before anything else: a READ(10) past the end of the LUN comes back as a
         // CHECK CONDITION, which stalls the bulk-IN pipe - and a single stall is what leaves this
         // transport dead for the rest of the session. Knowing the size keeps every sweep inside
