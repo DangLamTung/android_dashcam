@@ -87,6 +87,13 @@ class DvrUsbCameraController(
          */
         const val MAX_STALE_ADVANCES = 8
 
+        /** Frame size reported for the file source; the preview file carries no size field. */
+        const val PREVIEW_W = 1280
+        const val PREVIEW_H = 720
+
+        /** Poll interval for the preview file. 80 ms is smooth enough for a HUD and cheap to read. */
+        const val PREVIEW_POLL_MS = 80L
+
         /**
          * Bounds on a believable `frame size` header field. A garbage value must not turn every
          * poll into a 512 KB read: this DVR resents large transfers.
@@ -283,6 +290,25 @@ class DvrUsbCameraController(
         }
         thread = null
         registerReceiver()
+        // The file source is opt-in through a folder grant and wins when one exists. It is offered
+        // because the Bulk-Only Transport path, which streams fine on other hardware, cannot
+        // survive this phone's USB link: the DVR re-enumerates every ~6.5 s and each disappearance
+        // kills the transfer in flight. Reading VSFILE issues only file reads, so a dropped one
+        // costs nothing and is retried on the next poll. See DvrPreviewFile.
+        if (DvrPreviewFile.hasGrant(context)) {
+            val doc = DvrPreviewFile.previewDocument(context)
+            HudLogger.i(TAG, "folder access granted - streaming ${DvrPreviewFile.PREVIEW_NAME} instead of claiming USB")
+            HudLogger.i(TAG, "preview document: ${doc ?: "not found yet"}")
+            isOpen = true
+            running = true
+            framesDelivered = 0
+            listener.onStatusChanged("U2 DVR: reading preview file")
+            thread = Thread({ previewLoop() }, "dvr-preview").apply {
+                isDaemon = true
+                start()
+            }
+            return
+        }
         val usb = context.getSystemService(Context.USB_SERVICE) as? UsbManager
         if (usb == null) {
             listener.onError("USB service unavailable")
@@ -407,6 +433,55 @@ class DvrUsbCameraController(
         listener.onStatusChanged("U2 DVR: streaming")
         HudLogger.i(TAG, "interface re-claimed; resuming the stream")
         return true
+    }
+
+    /** Reads the DVR's preview file and feeds it through the shared JPEG sink. */
+    private fun previewLoop() {
+        var announced = false
+        var lastHash = 0
+        var misses = 0
+        try {
+            sink.prepare()
+            while (running) {
+                val bytes = DvrPreviewFile.readPreview(context)
+                val jpeg = bytes?.let { DvrFrameParser.lastCompleteFrame(it) }
+                if (jpeg == null) {
+                    misses++
+                    // Ten empty polls at 500 ms is long enough to be a real problem and short
+                    // enough that a replug is noticed quickly.
+                    if (misses == 10) {
+                        HudLogger.w(TAG, "no JPEG in ${DvrPreviewFile.PREVIEW_NAME} (read ${bytes?.size ?: 0} bytes)")
+                        listener.onStatusChanged("U2 DVR: no preview in ${DvrPreviewFile.PREVIEW_NAME}")
+                    }
+                    Thread.sleep(500)
+                    continue
+                }
+                misses = 0
+                val hash = jpeg.contentHashCode()
+                if (hash != lastHash) {
+                    lastHash = hash
+                    if (!announced) {
+                        sink.setFrameSize(PREVIEW_W, PREVIEW_H)
+                        listener.onStatusChanged("U2 DVR: streaming")
+                        announced = true
+                    }
+                    sink.handleJpegFrame(jpeg)
+                    framesDelivered++
+                    if (framesDelivered % 30 == 0) {
+                        HudLogger.i(TAG, "delivered $framesDelivered preview frames (${jpeg.size} bytes)")
+                    }
+                }
+                Thread.sleep(PREVIEW_POLL_MS)
+            }
+        } catch (t: Throwable) {
+            if (running) {
+                HudLogger.e(TAG, "preview loop failed", t)
+                listener.onError("U2 DVR preview failed: ${t.message}")
+            }
+        } finally {
+            isOpen = false
+            HudLogger.i(TAG, "preview loop finished after $framesDelivered frames")
+        }
     }
 
     private fun streamLoop() {

@@ -87,4 +87,13 @@
     <string name="calib_save_apply">💾 SAVE &amp; APPLY</string>
     <string name="calib_reset">↺ RESET</string>
     <string name="calib_exit">✕ EXIT</string>
+
+    <string name="settings_dvr_access_title">U2 DVR preview file</string>
+    <string name="settings_dvr_access_missing">No folder access — the U2 DVR falls back to the USB path, which only ever sees a static image.</string>
+    <string name="settings_dvr_access_granted">Folder access granted. Plug in the U2 DVR and select CAM: U2 DVR.</string>
+    <string name="settings_dvr_grant">Grant U2 DVR folder access…</string>
+    <string name="settings_dvr_revoke">Forget U2 DVR folder</string>
+    <string name="settings_dvr_access_hint">In the picker, open the U2 DVR drive (it appears at the top, usually a 4–8 character name) and tap “Use this folder”, then Allow. This is a one-time step.</string>
+    <string name="settings_dvr_access_saved">U2 DVR folder saved</string>
+    <string name="settings_dvr_access_failed">Android refused the folder grant</string>
 </resources>

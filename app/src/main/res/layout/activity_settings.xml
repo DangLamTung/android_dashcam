@@ -430,6 +430,52 @@
             android:textColor="@color/hud_text_secondary"
             android:textSize="11sp" />
 
+        <!-- U2 DVR preview-file access -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_dvr_access_title"
+            android:textColor="@color/hud_text_primary"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tvDvrAccess"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/settings_dvr_access_missing"
+            android:textColor="@color/hud_text_secondary"
+            android:textSize="11sp" />
+
+        <Button
+            android:id="@+id/btnDvrFolder"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:backgroundTint="@color/hud_button_bg"
+            android:text="@string/settings_dvr_grant"
+            android:textColor="@color/hud_accent"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnDvrForget"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:backgroundTint="@color/hud_button_bg"
+            android:text="@string/settings_dvr_revoke"
+            android:textColor="@color/hud_text_primary" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/settings_dvr_access_hint"
+            android:textColor="@color/hud_text_secondary"
+            android:textSize="11sp" />
+
         <!-- actions -->
         <Button
             android:id="@+id/btnSave"

@@ -32,6 +32,9 @@ object DvrFrameParser {
     /** How far the JPEG start marker may sit from [FRAME_OFFSET] and still count as a slot. */
     private const val SOI_SLACK = 512
 
+    /** Smallest JPEG that is a real frame rather than a stray marker pair inside a header. */
+    private const val MIN_STANDALONE_FRAME_BYTES = 2048
+
     /** Offset of the first JPEG SOI (`FF D8 FF`), or -1 when there is none. */
     fun firstSoi(data: ByteArray): Int = firstSoiFrom(data, 0)
 
@@ -106,6 +109,42 @@ object DvrFrameParser {
         val end = firstEoi(slot, start)
         if (end <= start) return null
         return slot.copyOfRange(start, end)
+    }
+
+    /**
+     * Extracts the **last** complete JPEG in [data], or null when there is none.
+     *
+     * The preview file is a header followed by JPEG frames, and it may either be rewritten in
+     * place (one frame) or appended to (a run of frames). Taking the first frame would freeze the
+     * picture the moment a second one appears, so the newest complete frame wins.
+     */
+    fun lastCompleteFrame(data: ByteArray): ByteArray? {
+        var start = -1
+        var bestStart = -1
+        var bestEnd = -1
+        var i = 0
+        while (i + 1 < data.size) {
+            val b0 = data[i].toInt() and 0xFF
+            val b1 = data[i + 1].toInt() and 0xFF
+            if (b0 == (SOI shr 8) && b1 == (SOI and 0xFF)) {
+                start = i
+                i += 2
+                continue
+            }
+            if (start >= 0 && b0 == (EOI shr 8) && b1 == (EOI and 0xFF)) {
+                val end = i + 2
+                if (end - start >= MIN_STANDALONE_FRAME_BYTES) {
+                    bestStart = start
+                    bestEnd = end
+                }
+                start = -1
+                i = end
+                continue
+            }
+            i++
+        }
+        if (bestStart < 0) return null
+        return data.copyOfRange(bestStart, bestEnd)
     }
 
     /** 512-byte blocks needed to read a frame that starts at [soi] and is [frameSize] long. */

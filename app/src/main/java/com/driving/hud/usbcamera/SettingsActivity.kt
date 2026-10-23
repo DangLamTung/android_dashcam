@@ -8,7 +8,9 @@ import android.widget.SeekBar
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import com.driving.hud.usbcamera.camera.DvrPreviewFile
 import com.driving.hud.usbcamera.util.HudLogger
 import com.driving.hud.usbcamera.util.HudPrefs
 
@@ -226,6 +228,45 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         findViewById<Button>(R.id.btnCancel).setOnClickListener { finish() }
+
+        // One-time directory grant for the U2 DVR's preview file. The DVR's own card must stay
+        // mounted for the preview to update, so the app reads VSFILE through the picker's grant
+        // instead of claiming the USB interface.
+        val tvDvrAccess = findViewById<TextView>(R.id.tvDvrAccess)
+        fun showDvrAccessState() {
+            tvDvrAccess.text = if (DvrPreviewFile.hasGrant(this)) {
+                getString(R.string.settings_dvr_access_granted)
+            } else {
+                getString(R.string.settings_dvr_access_missing)
+            }
+        }
+        showDvrAccessState()
+
+        val folderPicker = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+            if (uri == null) return@registerForActivityResult
+            try {
+                contentResolver.takePersistableUriPermission(
+                    uri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+                DvrPreviewFile.saveGrant(this, uri)
+                Toast.makeText(this, R.string.settings_dvr_access_saved, Toast.LENGTH_LONG).show()
+            } catch (t: SecurityException) {
+                HudLogger.e(TAG, "folder grant failed", t)
+                Toast.makeText(this, R.string.settings_dvr_access_failed, Toast.LENGTH_LONG).show()
+            }
+            showDvrAccessState()
+        }
+
+        findViewById<Button>(R.id.btnDvrFolder).setOnClickListener {
+            HudLogger.i(TAG, "U2 DVR folder picker opened")
+            folderPicker.launch(null)
+        }
+        findViewById<Button>(R.id.btnDvrForget).setOnClickListener {
+            DvrPreviewFile.clearGrant(this)
+            HudLogger.i(TAG, "U2 DVR folder grant cleared")
+            showDvrAccessState()
+        }
     }
 
     override fun onOptionsItemSelected(item: android.view.MenuItem): Boolean {
