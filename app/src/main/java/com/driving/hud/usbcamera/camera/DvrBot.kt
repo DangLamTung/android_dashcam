@@ -57,6 +57,9 @@ class DvrBot(
          * has already gone away, which is exactly when the next step is to reopen it.
          */
         const val HALT_CLEAR_TIMEOUT_MS = 100
+
+        /** Recovery attempts after which the pipe is treated as gone and the caller reopens. */
+        const val MAX_RECOVERIES = 2
     }
 
     /** When the pipe was last reset, so recovery attempts cannot become the bottleneck. */
@@ -144,6 +147,10 @@ class DvrBot(
      */
     fun recover() {
         pipeDirty = false
+        // A device that has ignored two recoveries in a row is not coming back: its control
+        // endpoint stops answering too, and the caller's reopen is the only cure. Burning another
+        // ~600 ms of control transfers only delays that.
+        if (transportFailures >= MAX_RECOVERIES) return
         clearHalt(outEndpoint)
         clearHalt(inEndpoint)
 

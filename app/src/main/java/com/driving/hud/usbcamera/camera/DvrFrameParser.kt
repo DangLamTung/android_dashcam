@@ -29,9 +29,14 @@ object DvrFrameParser {
     private const val SOI = 0xFFD8
     private const val EOI = 0xFFD9
 
+    /** How far the JPEG start marker may sit from [FRAME_OFFSET] and still count as a slot. */
+    private const val SOI_SLACK = 512
+
     /** Offset of the first JPEG SOI (`FF D8 FF`), or -1 when there is none. */
-    fun firstSoi(data: ByteArray): Int {
-        var i = 0
+    fun firstSoi(data: ByteArray): Int = firstSoiFrom(data, 0)
+
+    private fun firstSoiFrom(data: ByteArray, from: Int): Int {
+        var i = from
         while (i + 2 < data.size) {
             if ((data[i].toInt() and 0xFF) == (SOI shr 8) &&
                 (data[i + 1].toInt() and 0xFF) == (SOI and 0xFF) &&
@@ -43,6 +48,11 @@ object DvrFrameParser {
         }
         return -1
     }
+
+    /** First SOI within [slack] bytes of [at], or -1. */
+    private fun soiNear(data: ByteArray, at: Int, slack: Int): Int =
+        firstSoiFrom(data, (at - slack).coerceAtLeast(0))
+            .takeIf { it in (at - slack).coerceAtLeast(0)..(at + slack) }
 
     /** End offset (exclusive) of the first EOI at or after [from], or -1. */
     fun firstEoi(data: ByteArray, from: Int): Int {
@@ -56,13 +66,20 @@ object DvrFrameParser {
         return -1
     }
 
-    /** True when [data] looks like the start of a video slot carrying a JPEG. */
+    /**
+     * True when [data] looks like the start of a video slot carrying a JPEG.
+     *
+     * The JPEG start marker has to sit at [FRAME_OFFSET] (within [SOI_SLACK]), because that is
+     * where the device puts it. Accepting an SOI anywhere in the block made this match ordinary
+     * filesystem data - lba 896 matched intermittently - and committing to such a LBA wedges the
+     * DVR's whole USB stack.
+     */
     fun looksLikeSlotHeader(data: ByteArray): Boolean {
-        if (data.size < FRAME_OFFSET + 4) return false
+        if (data.size < FRAME_OFFSET + 3) return false
         for (i in SLOT_MAGIC.indices) {
             if (data[i] != SLOT_MAGIC[i]) return false
         }
-        return firstSoi(data) >= 0
+        return soiNear(data, FRAME_OFFSET, SOI_SLACK) >= 0
     }
 
     /** Frame size hint from header offset 12 (little-endian), or -1 when absent. */
@@ -79,7 +96,10 @@ object DvrFrameParser {
      * complete frame (mid-write, or not a video slot at all).
      */
     fun extractFrame(slot: ByteArray): ByteArray? {
-        val start = firstSoi(slot)
+        // Prefer the marker at the documented offset: a stray SOI inside the header would
+        // otherwise produce a truncated "frame" that cannot be decoded.
+        val anchored = soiNear(slot, FRAME_OFFSET, SOI_SLACK)
+        val start = if (anchored >= 0) anchored else firstSoi(slot)
         if (start < 0) return null
         val end = firstEoi(slot, start)
         if (end <= start) return null

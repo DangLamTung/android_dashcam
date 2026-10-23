@@ -77,6 +77,16 @@ class DvrUsbCameraController(
         /** Blocks swept by the fallback scan when READ CAPACITY could not be read (16 MB). */
         const val SCAN_LIMIT_BLOCKS = 32768
 
+        /** Jumps over empty slots tried before paying for a full re-locate sweep. */
+        const val MAX_HEADER_JUMPS = 4
+
+        /**
+         * Bounds on a believable `frame size` header field. A garbage value must not turn every
+         * poll into a 512 KB read: this DVR resents large transfers.
+         */
+        const val MIN_FRAME_BYTES = 16 * 1024
+        const val MAX_FRAME_BYTES = SLOT_BLOCKS * 512 - FRAME_OFFSET
+
         /**
          * Pause after claiming the interface. The DVR is still switching from card-reader to
          * ring mode when claimInterface() returns; commanding it immediately produces a stalled
@@ -137,6 +147,23 @@ class DvrUsbCameraController(
      * recover from on its own.
      */
     private var capacityBlocks = 0
+
+    /**
+     * Slots that made a transfer stall. Reading one wedges this DVR's whole USB stack (even
+     * control transfers stop being answered), so a LBA that has failed once is never probed
+     * again. 896 is a known false positive: it matches [DvrFrameParser.looksLikeSlotHeader] in
+     * the VSFILE header region and every attempt to use it has killed the session.
+     */
+    private val badSlots = HashSet<Int>()
+
+    /**
+     * Slot that last produced a frame. Probed first on the next claim, which turns a ~250
+     * command sweep into a single read and gets video on screen before the DVR gives up.
+     */
+    private var lastGoodSlot = -1
+
+    /** Consecutive advances over LBAs that carried no slot header. */
+    private var invalidHeaderJumps = 0
 
     /** When the ring position was last advanced because the frame had not changed. */
     private var lastAdvanceMs = 0L
@@ -317,7 +344,7 @@ class DvrUsbCameraController(
         capacityBlocks = if (capacity > 0) capacity else 0
         HudLogger.i(
             TAG,
-            "DVR capacity $capacityBlocks blocks (${capacityBlocks * 512 / 1024} KB), " +
+            "DVR capacity $capacityBlocks blocks (${capacityBlocks.toLong() * 512 / 1024} KB), " +
                 "status=${newBot.lastStatus}",
         )
         synchronized(releaseLock) {
@@ -331,6 +358,7 @@ class DvrUsbCameraController(
         slotLba = -1
         lastFrameHash = 0
         stalePolls = 0
+        invalidHeaderJumps = 0
         framesDelivered = 0
         lastFrameBytes = 0
         lastFailedLocateMs = 0L
@@ -484,7 +512,17 @@ class DvrUsbCameraController(
         } else {
             blocks
         }
-        var slot = readSlot(bot, slotLba, safeBlocks) ?: return null
+        var slot = readSlot(bot, slotLba, safeBlocks) ?: run {
+            // A read that produced no answer at this LBA means the request itself is what the DVR
+            // choked on: blacklist it so no later session walks back into it.
+            if (bot.lastStatus < 0) {
+                HudLogger.w(TAG, "slot $slotLba wedged the transport; blacklisting it")
+                badSlots.add(slotLba)
+                slotLba = -1
+                lastFrameBytes = 0
+            }
+            return null
+        }
 
         if (!DvrFrameParser.looksLikeSlotHeader(slot)) {
             if (lastFrameBytes > 0) {
@@ -493,10 +531,19 @@ class DvrUsbCameraController(
                 lastFrameBytes = 0
                 return null
             }
-            HudLogger.i(TAG, "slot $slotLba no longer a slot header; re-locating")
+            // Not a slot header: the ring has moved on. Step forward through the grid a few times
+            // before paying for a full sweep, which costs hundreds of commands this DVR cannot
+            // afford.
+            if (++invalidHeaderJumps <= MAX_HEADER_JUMPS) {
+                slotLba += SLOT_BLOCKS
+                return null
+            }
+            invalidHeaderJumps = 0
+            HudLogger.i(TAG, "no slot header after $MAX_HEADER_JUMPS jumps; re-locating from $slotLba")
             slotLba = -1
             return null
         }
+        invalidHeaderJumps = 0
 
         val hint = DvrFrameParser.frameSizeHint(slot)
         var jpeg = DvrFrameParser.extractFrame(slot)
@@ -513,7 +560,7 @@ class DvrUsbCameraController(
                 return null
             }
         }
-        if (hint > 0) lastFrameBytes = hint
+        if (hint in MIN_FRAME_BYTES..MAX_FRAME_BYTES) lastFrameBytes = hint
 
         val hash = jpeg.contentHashCode()
         if (hash == lastFrameHash) {
@@ -526,14 +573,20 @@ class DvrUsbCameraController(
             if (stalePolls >= 2 && nowMs - lastAdvanceMs >= STALE_ADVANCE_MIN_MS) {
                 stalePolls = 0
                 lastAdvanceMs = nowMs
-                val recordBlocks = ((FRAME_OFFSET + jpeg.size + 511) / 512).coerceAtLeast(64)
-                slotLba += recordBlocks
+                // The ring is a fixed 512 KB grid, not a packed list of frames: the two slots this
+                // device has been seen writing (2688 and 3712) are exactly SLOT_BLOCKS apart.
+                // Advancing by the frame size instead lands in the middle of the current slot,
+                // where the header check fails and the resulting re-locate sweep walks into LBAs
+                // that wedge the transport.
+                slotLba += SLOT_BLOCKS
+                lastFrameBytes = 0
                 HudLogger.i(TAG, "polled frame unchanged; moving to slot $slotLba")
             }
             return null
         }
         lastFrameHash = hash
         stalePolls = 0
+        lastGoodSlot = slotLba
         return jpeg
     }
 
@@ -541,7 +594,17 @@ class DvrUsbCameraController(
     private fun readSlot(bot: DvrBot, lba: Int, blocks: Int): ByteArray? {
         val need = blocks * 512
         if (scratch.size < need) scratch = ByteArray(need)
-        return if (bot.read10Into(lba, blocks, scratch) == need) scratch else null
+        val startedAt = System.currentTimeMillis()
+        val got = bot.read10Into(lba, blocks, scratch)
+        if (got == need) return scratch
+        // The (lba, blocks) pair is the one fact needed to tell a bad request from a slow device,
+        // and it is what made the earlier logs unreadable.
+        HudLogger.w(
+            TAG,
+            "read lba=$lba blocks=$blocks failed (got=$got status=${bot.lastStatus} " +
+                "in ${System.currentTimeMillis() - startedAt} ms)",
+        )
+        return null
     }
 
     /** Finds a 512 KB ring slot whose header carries a JPEG. */
@@ -549,6 +612,14 @@ class DvrUsbCameraController(
         val now = System.currentTimeMillis()
         if (lastFailedLocateMs != 0L && now - lastFailedLocateMs < LOCATE_RETRY_INTERVAL_MS) {
             return false
+        }
+        // The slot that worked last time is almost always still a slot, and a single read costs
+        // far less device goodwill than the sweep below.
+        if (lastGoodSlot >= 0 && probeSlot(lastGoodSlot)) {
+            slotLba = lastGoodSlot
+            lastFailedLocateMs = 0L
+            HudLogger.i(TAG, "stream slot found at last good lba=$lastGoodSlot")
+            return true
         }
         for (base in CANDIDATE_BASES) {
             if (!running) return false
@@ -586,6 +657,7 @@ class DvrUsbCameraController(
 
     private fun probeSlot(lba: Int): Boolean {
         val bot = this.bot ?: return false
+        if (lba in badSlots) return false
         // Never read past the end of the LUN: that is a CHECK CONDITION, and the CHECK CONDITION
         // is what stalls the bulk-IN pipe on this DVR.
         if (capacityBlocks > 0 && lba + HEADER_BLOCKS > capacityBlocks) return false
