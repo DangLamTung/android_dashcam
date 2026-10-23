@@ -50,6 +50,13 @@ class DvrBot(
          * time than the desync it is meant to cure.
          */
         const val RESET_MIN_INTERVAL_MS = 1000L
+
+        /**
+         * CLEAR_FEATURE(HALT) is a standard request the device answers even while its data pipes
+         * are halted, so it is cheap. A long timeout here only delays recovery from a device that
+         * has already gone away, which is exactly when the next step is to reopen it.
+         */
+        const val HALT_CLEAR_TIMEOUT_MS = 100
     }
 
     /** When the pipe was last reset, so recovery attempts cannot become the bottleneck. */
@@ -58,6 +65,23 @@ class DvrBot(
     /** Last CSW status byte (0 = passed), -1 when the transfer never produced one. */
     @Volatile
     var lastStatus: Int = -1
+
+    /**
+     * True when a command failed before its CSW arrived: host and device then disagree about
+     * where the next CSW starts, so the pipe has to be recovered before anything else is sent.
+     */
+    @Volatile
+    var pipeDirty: Boolean = false
+        private set
+
+    /**
+     * Consecutive commands that never produced a CSW. A stalled endpoint or a vanished device
+     * fails every transfer instantly, and polling cannot fix either, so the caller uses this to
+     * decide when to reopen the device instead of retrying.
+     */
+    @Volatile
+    var transportFailures: Int = 0
+        private set
 
     private fun buildCbw(cdb: ByteArray, dataLength: Int, dataIn: Boolean): ByteArray =
         ByteBuffer.allocate(31).order(ByteOrder.LITTLE_ENDIAN).apply {
@@ -71,9 +95,14 @@ class DvrBot(
         }.array()
 
     private fun sendCbw(cbw: ByteArray): Boolean {
+        // A command whose CSW never arrived left the device expecting no further traffic until it
+        // is reset. Recover first, or this CBW fails exactly like the one before it did.
+        if (pipeDirty) recover()
         val sent = bulkOut(cbw, 0, cbw.size)
         if (sent != cbw.size) {
             HudLogger.w(TAG, "CBW write failed: $sent")
+            pipeDirty = true
+            transportFailures++
             return false
         }
         return true
@@ -101,17 +130,23 @@ class DvrBot(
     /**
      * Bulk-Only Transport error recovery.
      *
-     * A data phase that ends short leaves host and device disagreeing about where the next CSW
-     * begins, and the only way back per the spec is the class-specific Bulk-Only Mass Storage
-     * Reset followed by CLEAR-FEATURE(HALT) on both endpoints. Without it every later command
-     * fails until the DVR is physically unplugged.
+     * A command that ends without its CSW leaves host and device disagreeing about where the
+     * next CSW begins, and a data phase the device rejects (a CHECK CONDITION, for instance a
+     * READ past the end of the LUN) **stalls the bulk-IN pipe** instead of sending one. Per the
+     * spec the host must clear both endpoint halts, optionally after the class-specific Bulk-Only
+     * Mass Storage Reset.
      *
-     * Rate limited, and the endpoint clears are skipped when the device rejects the reset
-     * request: this DVR answers the reset itself with -1, and two further failed control
-     * transfers would otherwise burn ~850 ms per retry. Callers only invoke this when the CSW is
-     * genuinely missing, never on a short-but-synchronised data phase.
+     * The order matters on this DVR: its answer to the class reset is a timeout, and an earlier
+     * version of this method treated that as "no endpoint is halted" and skipped the halts
+     * entirely. One stall then made every later transfer fail for the rest of the session — the
+     * `CBW write failed: -1` storm in `hud.log`. CLEAR_FEATURE(HALT) is therefore issued first
+     * and unconditionally, and the class reset is only a best-effort extra.
      */
-    fun resetPipe() {
+    fun recover() {
+        pipeDirty = false
+        clearHalt(outEndpoint)
+        clearHalt(inEndpoint)
+
         val now = System.currentTimeMillis()
         if (now - lastResetMs < RESET_MIN_INTERVAL_MS) return
         lastResetMs = now
@@ -123,13 +158,11 @@ class DvrBot(
             HudLogger.w(TAG, "BOT reset request failed: ${t.message}")
             -1
         }
-        HudLogger.i(TAG, "BOT mass-storage reset -> $rc")
         if (rc < 0) {
-            // Nothing to clear: the device did not accept the reset, so the halts are not ours.
-            return
+            HudLogger.w(TAG, "BOT mass-storage reset -> $rc (halts were cleared anyway)")
+        } else {
+            HudLogger.i(TAG, "BOT mass-storage reset -> $rc")
         }
-        clearHalt(outEndpoint)
-        clearHalt(inEndpoint)
     }
 
     /**
@@ -139,8 +172,10 @@ class DvrBot(
      */
     private fun clearHalt(endpoint: UsbEndpoint) {
         try {
-            val rc = connection.controlTransfer(0x02, 0x01, 0, endpoint.address, null, 0, timeoutMs)
-            HudLogger.i(TAG, "CLEAR_FEATURE(HALT) ep 0x%02x -> %d".format(endpoint.address, rc))
+            val rc = connection.controlTransfer(
+                0x02, 0x01, 0, endpoint.address, null, 0, HALT_CLEAR_TIMEOUT_MS,
+            )
+            HudLogger.w(TAG, "CLEAR_FEATURE(HALT) ep 0x%02x -> %d".format(endpoint.address, rc))
         } catch (t: Throwable) {
             HudLogger.w(TAG, "CLEAR_FEATURE(HALT) failed: ${t.message}")
         }
@@ -151,8 +186,13 @@ class DvrBot(
         val got = bulkIn(csw, 0, csw.size)
         if (got != csw.size) {
             HudLogger.w(TAG, "CSW read got $got")
+            // Nothing may be sent until the pipe is recovered; see recover().
+            pipeDirty = true
+            transportFailures++
             return -1
         }
+        pipeDirty = false
+        transportFailures = 0
         val buf = ByteBuffer.wrap(csw).order(ByteOrder.LITTLE_ENDIAN)
         val signature = buf.int
         buf.int // tag
@@ -198,7 +238,7 @@ class DvrBot(
         // DVR rewriting the ring, not an error worth resetting the pipe for.
         lastStatus = readCsw()
         if (lastStatus < 0) {
-            resetPipe()
+            recover()
             return -1
         }
         if (received != length) {
@@ -236,7 +276,7 @@ class DvrBot(
         // Same rule as read10Into: the CSW has to be consumed whatever the data phase did.
         lastStatus = readCsw()
         if (lastStatus < 0) {
-            resetPipe()
+            recover()
             return false
         }
         if (sent != length) {

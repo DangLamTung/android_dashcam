@@ -73,6 +73,29 @@ class DvrUsbCameraController(
 
         /** Slot bases probed at startup; the ring's first record sits near 448 KB. */
         val CANDIDATE_BASES = intArrayOf(896, 0, 1024, 512, 1536, 2048, 2560, 3072, 4096)
+
+        /** Blocks swept by the fallback scan when READ CAPACITY could not be read (16 MB). */
+        const val SCAN_LIMIT_BLOCKS = 32768
+
+        /**
+         * Pause after claiming the interface. The DVR is still switching from card-reader to
+         * ring mode when claimInterface() returns; commanding it immediately produces a stalled
+         * transfer that costs far more than this wait.
+         */
+        const val CLAIM_SETTLE_MS = 250L
+
+        /**
+         * Consecutive transfers without a CSW that mean the pipe is dead rather than busy.
+         * Polling cannot revive a stalled endpoint and the DVR's own watchdog resets it about
+         * six seconds after it stops answering, so the device is reopened well before that.
+         */
+        const val TRANSPORT_FAILURES_BEFORE_REOPEN = 3
+
+        /** Wait between re-open attempts once the DVR has stopped answering at all. */
+        const val REOPEN_BACKOFF_MS = 5000L
+
+        /** Re-open attempts that are tried back-to-back before falling back to REOPEN_BACKOFF_MS. */
+        const val REOPENS_BEFORE_BACKOFF = 2
     }
 
     private val sink = MjpegFrameSink(context, listener, TAG)
@@ -107,6 +130,13 @@ class DvrUsbCameraController(
 
     /** When the last slot sweep failed, so sweeps can be rate limited. */
     private var lastFailedLocateMs = 0L
+
+    /**
+     * Block count READ CAPACITY reported for the claimed LUN, 0 when it never answered. Reads are
+     * kept inside it: an out-of-range READ stalls the bulk-IN pipe, which this DVR does not
+     * recover from on its own.
+     */
+    private var capacityBlocks = 0
 
     /** When the ring position was last advanced because the frame had not changed. */
     private var lastAdvanceMs = 0L
@@ -272,11 +302,29 @@ class DvrUsbCameraController(
             listener.onError("U2 DVR: missing bulk endpoints")
             return false
         }
+        HudLogger.i(
+            TAG,
+            "iface id=${iface.id} class=${iface.interfaceClass} sub=${iface.interfaceSubclass} " +
+                "proto=${iface.interfaceProtocol} eps=${iface.endpointCount}; " +
+                "bulk in=0x%02x out=0x%02x".format(inEp.address, outEp.address),
+        )
+        val newBot = DvrBot(conn, outEp, inEp, iface.id, STREAM_TIMEOUT_MS)
+        // READ CAPACITY before anything else: a READ(10) past the end of the LUN comes back as a
+        // CHECK CONDITION, which stalls the bulk-IN pipe - and a single stall is what leaves this
+        // transport dead for the rest of the session. Knowing the size keeps every sweep inside
+        // the LUN. It also tells a card-reader LUN apart from the video ring at a glance.
+        val capacity = runCatching { newBot.readCapacity() }.getOrNull() ?: 0
+        capacityBlocks = if (capacity > 0) capacity else 0
+        HudLogger.i(
+            TAG,
+            "DVR capacity $capacityBlocks blocks (${capacityBlocks * 512 / 1024} KB), " +
+                "status=${newBot.lastStatus}",
+        )
         synchronized(releaseLock) {
             connection = conn
             inEndpoint = inEp
             outEndpoint = outEp
-            bot = DvrBot(conn, outEp, inEp, iface.id, STREAM_TIMEOUT_MS)
+            bot = newBot
         }
         sink.prepare()
         isOpen = true
@@ -305,6 +353,13 @@ class DvrUsbCameraController(
             HudLogger.w(TAG, "re-claim failed")
             return false
         }
+        // Same settle as the initial open: the firmware needs a moment after the claim before it
+        // accepts commands again.
+        try {
+            Thread.sleep(CLAIM_SETTLE_MS)
+        } catch (_: InterruptedException) {
+            return false
+        }
         listener.onStatusChanged("U2 DVR: streaming")
         HudLogger.i(TAG, "interface re-claimed; resuming the stream")
         return true
@@ -314,11 +369,41 @@ class DvrUsbCameraController(
         var announced = false
         var misses = 0
         var reclaims = 0
+        var reopenAttempts = 0
         try {
+            // See CLAIM_SETTLE_MS: the DVR is not ready for commands the instant the claim lands.
+            Thread.sleep(CLAIM_SETTLE_MS)
             while (running) {
                 val frame = readFrame()
                 if (frame == null) {
                     misses++
+                    // Missing frames while the ring is rewritten is normal and resolves on its
+                    // own; a pipe that keeps failing to produce a CSW does not. Every doomed
+                    // retry costs a timeout and the DVR's watchdog resets it ~6 s after it stops
+                    // answering, so a dead pipe is repaired immediately instead of after
+                    // STALL_GIVE_UP_POLLS polls (~30 s, which is far too late).
+                    val pipeFailures = bot?.transportFailures ?: 0
+                    if (pipeFailures >= TRANSPORT_FAILURES_BEFORE_REOPEN) {
+                        reopenAttempts++
+                        if (reopenAttempts <= MAX_REPORTED_RECLAIMS) {
+                            HudLogger.e(TAG, "$pipeFailures transfers in a row got no CSW; re-opening", null)
+                            listener.onError("U2 DVR stopped answering USB transfers")
+                        }
+                        HudLogger.i(TAG, "re-opening the DVR to recover the USB pipe (attempt $reopenAttempts)")
+                        if (reclaim()) {
+                            misses = 0
+                            announced = false
+                        }
+                        // Keep trying, but stop hammering a DVR that is not coming back: each
+                        // re-open resets the device, and a fast loop would only trip its watchdog
+                        // again. A replug still opens it immediately.
+                        val backoff = reopenAttempts > REOPENS_BEFORE_BACKOFF
+                        if (backoff) {
+                            HudLogger.w(TAG, "DVR not answering after $reopenAttempts re-opens; backing off")
+                        }
+                        Thread.sleep(if (backoff) REOPEN_BACKOFF_MS else RECLAIM_RETRY_MS)
+                        continue
+                    }
                     // A null read is normal while the ring is being rewritten, but a long run of
                     // them means the DVR is not sending video any more (wrong mode, unplugged
                     // cable, or the vendor app took the interface back). Say so instead of
@@ -352,6 +437,7 @@ class DvrUsbCameraController(
                 }
                 misses = 0
                 reclaims = 0
+                reopenAttempts = 0
                 if (!announced) {
                     sink.setFrameSize(1280, 720)
                     listener.onStatusChanged("U2 DVR: streaming")
@@ -391,7 +477,14 @@ class DvrUsbCameraController(
         } else {
             HEADER_BLOCKS
         }
-        var slot = readSlot(bot, slotLba, blocks) ?: return null
+        // Clamp to the LUN: reading past it is a CHECK CONDITION, and the stall it causes is
+        // exactly what kills this transport.
+        val safeBlocks = if (capacityBlocks > 0) {
+            (capacityBlocks - slotLba).coerceIn(1, blocks)
+        } else {
+            blocks
+        }
+        var slot = readSlot(bot, slotLba, safeBlocks) ?: return null
 
         if (!DvrFrameParser.looksLikeSlotHeader(slot)) {
             if (lastFrameBytes > 0) {
@@ -411,7 +504,7 @@ class DvrUsbCameraController(
             // The cached size was short (the frame grew) or the slot was mid-write: re-read the
             // whole slot once, sized from the hint that is now in hand.
             val full = DvrFrameParser.blocksFor(FRAME_OFFSET, hint, SLOT_BLOCKS)
-            if (full > blocks) {
+            if (full > safeBlocks) {
                 slot = readSlot(bot, slotLba, full) ?: return null
                 jpeg = DvrFrameParser.extractFrame(slot)
             }
@@ -465,12 +558,17 @@ class DvrUsbCameraController(
                 HudLogger.i(TAG, "stream slot found at lba=$base (+${base * 512 / 1024} KB)")
                 return true
             }
+            // A probe that could not complete is not "this LBA holds no slot": the pipe needs
+            // repairing, and firing the rest of the sweep at a device that is not answering only
+            // burns its watchdog budget.
+            if ((bot?.transportFailures ?: 0) > 0) return false
         }
         // Fallback: walk the first 16 MB in 64 KB steps (only at startup / after a wrap). This is
         // up to 256 SCSI transfers, so it has to abort the moment the source is asked to stop -
         // otherwise close() cannot keep its promise and the thread outlives the connection.
         var lba = 0
-        while (lba < 32768) {
+        val limit = if (capacityBlocks > 0) minOf(SCAN_LIMIT_BLOCKS, capacityBlocks) else SCAN_LIMIT_BLOCKS
+        while (lba < limit) {
             if (!running) return false
             if (probeSlot(lba)) {
                 slotLba = lba
@@ -478,15 +576,19 @@ class DvrUsbCameraController(
                 HudLogger.i(TAG, "stream slot found by scan at lba=$lba")
                 return true
             }
+            if ((bot?.transportFailures ?: 0) > 0) return false
             lba += 128
         }
         lastFailedLocateMs = System.currentTimeMillis()
-        HudLogger.w(TAG, "no video slot found - is the DVR in video mode?")
+        HudLogger.w(TAG, "no video slot found in $limit blocks - is the DVR in video mode?")
         return false
     }
 
     private fun probeSlot(lba: Int): Boolean {
         val bot = this.bot ?: return false
+        // Never read past the end of the LUN: that is a CHECK CONDITION, and the CHECK CONDITION
+        // is what stalls the bulk-IN pipe on this DVR.
+        if (capacityBlocks > 0 && lba + HEADER_BLOCKS > capacityBlocks) return false
         val head = bot.read10(lba, HEADER_BLOCKS) ?: return false
         return DvrFrameParser.looksLikeSlotHeader(head)
     }

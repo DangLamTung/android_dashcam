@@ -55,8 +55,8 @@ android {
         applicationId = "com.driving.hud.usbcamera"
         minSdk = 24
         targetSdk = 34
-        versionCode = 6
-        versionName = "1.0.5"
+        versionCode = 7
+        versionName = "1.0.6"
 
         ndk {
             // libusb is currently built for arm64-v8a only (the target phone ABI).
