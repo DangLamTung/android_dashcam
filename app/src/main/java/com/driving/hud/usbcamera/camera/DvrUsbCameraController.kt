@@ -87,6 +87,9 @@ class DvrUsbCameraController(
          */
         const val MAX_STALE_ADVANCES = 8
 
+        /** Cap on remembered dead slots before the set is reset. */
+        const val MAX_STALE_SLOTS = 32
+
         /** Frame size reported for the file source; the preview file carries no size field. */
         const val PREVIEW_W = 1280
         const val PREVIEW_H = 720
@@ -182,6 +185,13 @@ class DvrUsbCameraController(
     /** Consecutive advances over slots that carried the same frame. */
     private var staleAdvances = 0
 
+    /**
+     * Slots that answered with a valid header but never produced a new frame. The DVR moves its
+     * live slot when the interface is re-claimed, and the old slot keeps its header, so without
+     * this the locate sweep would keep choosing the dead one.
+     */
+    private val staleSlots = HashSet<Int>()
+
     /** When the ring position was last advanced because the frame had not changed. */
     private var lastAdvanceMs = 0L
 
@@ -246,6 +256,7 @@ class DvrUsbCameraController(
                 permissionDenied = false
                 permissionRequestPending = false
                 badSlots.clear()
+                staleSlots.clear()
                 val wasStreaming = isOpen
                 close()
                 if (wasStreaming) listener.onDisconnected()
@@ -288,6 +299,7 @@ class DvrUsbCameraController(
         if (forcePermission) {
             permissionDenied = false
             badSlots.clear()
+            staleSlots.clear()
         }
         // A session that is already streaming wins; otherwise wait for the previous one to hand
         // the interface back before claiming it again.
@@ -443,6 +455,7 @@ class DvrUsbCameraController(
         if (!running) return false
         HudLogger.w(TAG, "re-claiming the DVR interface after a stall")
         badSlots.clear()
+        staleSlots.clear()
         releaseStreaming()
         val usb = context.getSystemService(Context.USB_SERVICE) as? UsbManager ?: return false
         val device = DvrUsbProbe.findDevice(context) ?: return false
@@ -693,11 +706,16 @@ class DvrUsbCameraController(
                 stalePolls = 0
                 lastAdvanceMs = nowMs
                 if (staleAdvances >= MAX_STALE_ADVANCES) {
-                    // Every slot in the ring carried the same picture: walking further only costs
-                    // transfers. Go back to the anchor slot and keep polling it, where the DVR
-                    // rewrites the live frame once it is actually streaming.
+                    // Every slot in the ring carried the same picture. After the interface is
+                    // re-claimed the DVR moves its live slot, so the one we anchored on keeps a
+                    // valid header while never being rewritten - re-selecting it (which is what
+                    // probing lastGoodSlot first does) loops here forever. Mark it stale and drop
+                    // the anchor so the sweep actually looks at other slots.
                     staleAdvances = 0
-                    HudLogger.w(TAG, "same frame across $MAX_STALE_ADVANCES slots; re-anchoring")
+                    if (staleSlots.size > MAX_STALE_SLOTS) staleSlots.clear()
+                    staleSlots.add(slotLba)
+                    lastGoodSlot = -1
+                    HudLogger.w(TAG, "slot $slotLba stopped updating; re-locating from scratch")
                     slotLba = -1
                     lastFrameBytes = 0
                     return null
@@ -788,7 +806,7 @@ class DvrUsbCameraController(
 
     private fun probeSlot(lba: Int): Boolean {
         val bot = this.bot ?: return false
-        if (lba in badSlots) return false
+        if (lba in badSlots || lba in staleSlots) return false
         // Never read past the end of the LUN: that is a CHECK CONDITION, and the CHECK CONDITION
         // is what stalls the bulk-IN pipe on this DVR.
         if (capacityBlocks > 0 && lba + HEADER_BLOCKS > capacityBlocks) return false
