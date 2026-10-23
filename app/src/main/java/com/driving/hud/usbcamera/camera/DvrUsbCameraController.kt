@@ -81,6 +81,19 @@ class DvrUsbCameraController(
         const val MAX_HEADER_JUMPS = 4
 
         /**
+         * Consecutive slots that carried the same frame before giving up on walking the ring.
+         * A card-reader-mode DVR serves one static image from every slot, and walking 512 KB at
+         * a time then just burns device goodwill until the transport wedges.
+         */
+        const val MAX_STALE_ADVANCES = 8
+
+        /** Vendor mode-switch request (bmRequestType 0x42, bRequest 0x00, 1-byte payload). */
+        const val MODE_REQUEST_TIMEOUT_MS = 500
+
+        /** Pause after the mode switch, so the firmware has acted on it before the first command. */
+        const val MODE_SWITCH_SETTLE_MS = 400L
+
+        /**
          * Bounds on a believable `frame size` header field. A garbage value must not turn every
          * poll into a 512 KB read: this DVR resents large transfers.
          */
@@ -164,6 +177,9 @@ class DvrUsbCameraController(
 
     /** Consecutive advances over LBAs that carried no slot header. */
     private var invalidHeaderJumps = 0
+
+    /** Consecutive advances over slots that carried the same frame. */
+    private var staleAdvances = 0
 
     /** When the ring position was last advanced because the frame had not changed. */
     private var lastAdvanceMs = 0L
@@ -336,6 +352,17 @@ class DvrUsbCameraController(
                 "bulk in=0x%02x out=0x%02x".format(inEp.address, outEp.address),
         )
         val newBot = DvrBot(conn, outEp, inEp, iface.id, STREAM_TIMEOUT_MS)
+        // Switch the DVR out of card-reader mode before any SCSI traffic. In card-reader mode it
+        // serves the single static JPEG that sits in VSFILE, which is exactly the "one image and
+        // never updates" behaviour observed on the phone: eight consecutive ring slots all held
+        // the same frame. The vendor app issues this request before it starts reading, and
+        // DvrUsbProbe has always sent it - the streaming path never did.
+        val mode = runCatching {
+            conn.controlTransfer(0x42, 0x00, 0, 0, byteArrayOf(1), 1, MODE_REQUEST_TIMEOUT_MS)
+        }.getOrDefault(-1)
+        HudLogger.i(TAG, "changeMode(1) -> $mode")
+        // Give the firmware a moment to act on it before the first command.
+        Thread.sleep(MODE_SWITCH_SETTLE_MS)
         // READ CAPACITY before anything else: a READ(10) past the end of the LUN comes back as a
         // CHECK CONDITION, which stalls the bulk-IN pipe - and a single stall is what leaves this
         // transport dead for the rest of the session. Knowing the size keeps every sweep inside
@@ -359,6 +386,7 @@ class DvrUsbCameraController(
         lastFrameHash = 0
         stalePolls = 0
         invalidHeaderJumps = 0
+        staleAdvances = 0
         framesDelivered = 0
         lastFrameBytes = 0
         lastFailedLocateMs = 0L
@@ -573,6 +601,17 @@ class DvrUsbCameraController(
             if (stalePolls >= 2 && nowMs - lastAdvanceMs >= STALE_ADVANCE_MIN_MS) {
                 stalePolls = 0
                 lastAdvanceMs = nowMs
+                if (staleAdvances >= MAX_STALE_ADVANCES) {
+                    // Every slot in the ring carried the same picture: walking further only costs
+                    // transfers. Go back to the anchor slot and keep polling it, where the DVR
+                    // rewrites the live frame once it is actually streaming.
+                    staleAdvances = 0
+                    HudLogger.w(TAG, "same frame across $MAX_STALE_ADVANCES slots; re-anchoring")
+                    slotLba = -1
+                    lastFrameBytes = 0
+                    return null
+                }
+                staleAdvances++
                 // The ring is a fixed 512 KB grid, not a packed list of frames: the two slots this
                 // device has been seen writing (2688 and 3712) are exactly SLOT_BLOCKS apart.
                 // Advancing by the frame size instead lands in the middle of the current slot,
@@ -586,6 +625,7 @@ class DvrUsbCameraController(
         }
         lastFrameHash = hash
         stalePolls = 0
+        staleAdvances = 0
         lastGoodSlot = slotLba
         return jpeg
     }
