@@ -32,6 +32,9 @@ object HudPrefs {
     private const val KEY_CALIB_FOV = "calib_fov_deg"
     private const val KEY_RECORD_OVERLAY = "record_overlay"
     private const val KEY_SWAP_RECORD_CHROMA = "swap_record_chroma"
+    private const val KEY_ALERTS = "alerts_enabled"
+    private const val KEY_SHOW_BATTERY = "show_battery"
+    private const val KEY_DETECT_ZONE = "detect_zone_bottom_only"
 
     private fun sp(ctx: Context): SharedPreferences =
         ctx.getSharedPreferences(FILE, Context.MODE_PRIVATE)
@@ -44,6 +47,18 @@ object HudPrefs {
     fun previewHeight(ctx: Context) = sp(ctx).getInt(KEY_HEIGHT, 720)
 
     fun detect(ctx: Context) = sp(ctx).getBoolean(KEY_DETECT, false)
+
+    /** Audible proximity alerts. Kept separate from detection so the picture can stay annotated. */
+    fun alertsEnabled(ctx: Context) = sp(ctx).getBoolean(KEY_ALERTS, true)
+
+    /** Whether the HUD telemetry shows the battery line. */
+    fun showBattery(ctx: Context) = sp(ctx).getBoolean(KEY_SHOW_BATTERY, true)
+
+    /**
+     * When true only detections in the lower two thirds of the frame are kept: the top third is
+     * sky, signs and the far distance, which produced alerts the driver cannot act on.
+     */
+    fun detectZoneBottomOnly(ctx: Context) = sp(ctx).getBoolean(KEY_DETECT_ZONE, true)
 
     /**
      * When true an extra RAW frame callback is registered to measure the camera frame rate.
@@ -153,6 +168,12 @@ object HudPrefs {
         sp(ctx).edit().putInt(KEY_WIDTH, w).putInt(KEY_HEIGHT, h).apply()
 
     fun setDetect(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean(KEY_DETECT, v).apply()
+    fun setAlertsEnabled(ctx: Context, v: Boolean) =
+        sp(ctx).edit().putBoolean(KEY_ALERTS, v).apply()
+    fun setShowBattery(ctx: Context, v: Boolean) =
+        sp(ctx).edit().putBoolean(KEY_SHOW_BATTERY, v).apply()
+    fun setDetectZoneBottomOnly(ctx: Context, v: Boolean) =
+        sp(ctx).edit().putBoolean(KEY_DETECT_ZONE, v).apply()
     fun setConfidence(ctx: Context, v: Float) = sp(ctx).edit().putFloat(KEY_CONF, v).apply()
     fun setModelAsset(ctx: Context, v: String) = sp(ctx).edit().putString(KEY_MODEL, v).apply()
 

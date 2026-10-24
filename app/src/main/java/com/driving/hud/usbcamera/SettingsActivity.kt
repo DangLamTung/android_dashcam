@@ -55,6 +55,8 @@ class SettingsActivity : AppCompatActivity() {
         val swRecordOverlay = findViewById<Switch>(R.id.swRecordOverlay)
         val swSwapChroma = findViewById<Switch>(R.id.swSwapChroma)
         val swDetect = findViewById<Switch>(R.id.swDetect)
+        val swDetectZone = findViewById<Switch>(R.id.swDetectZone)
+        val swShowBattery = findViewById<Switch>(R.id.swShowBattery)
         val rbCamUsb = findViewById<RadioButton>(R.id.rbCamUsb)
         val rbCamSystem = findViewById<RadioButton>(R.id.rbCamSystem)
         val rbCamWifi = findViewById<RadioButton>(R.id.rbCamWifi)
@@ -88,6 +90,8 @@ class SettingsActivity : AppCompatActivity() {
         swRecordOverlay.isChecked = HudPrefs.recordOverlay(this)
         swSwapChroma.isChecked = HudPrefs.swapRecordChroma(this)
         swDetect.isChecked = HudPrefs.detect(this)
+        swDetectZone.isChecked = HudPrefs.detectZoneBottomOnly(this)
+        swShowBattery.isChecked = HudPrefs.showBattery(this)
         etModel.setText(HudPrefs.modelAsset(this))
 
         when (HudPrefs.cameraMode(this)) {
@@ -151,6 +155,8 @@ class SettingsActivity : AppCompatActivity() {
             HudPrefs.setRecordOverlay(this, swRecordOverlay.isChecked)
             HudPrefs.setSwapRecordChroma(this, swSwapChroma.isChecked)
             HudPrefs.setDetect(this, swDetect.isChecked)
+            HudPrefs.setDetectZoneBottomOnly(this, swDetectZone.isChecked)
+            HudPrefs.setShowBattery(this, swShowBattery.isChecked)
 
             val mode = when {
                 rbCamSystem.isChecked -> HudPrefs.MODE_SYSTEM

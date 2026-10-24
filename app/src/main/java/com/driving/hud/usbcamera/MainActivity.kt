@@ -54,6 +54,12 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
 
     companion object {
         private const val TAG = "MainActivity"
+
+        /**
+         * Detections whose vertical centre is above this fraction of the frame are dropped when
+         * the lower-two-thirds zone is enabled.
+         */
+        private const val DETECTION_ZONE_TOP = 1f / 3f
         const val EXTRA_START_CALIBRATION = "com.driving.hud.usbcamera.START_CALIBRATION"
 
         /**
@@ -329,10 +335,28 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
         }
     }
 
+    /** Reflects the two quick switches in the control bar. */
+    private fun updateQuickToggles() {
+        val alerts = HudPrefs.alertsEnabled(this)
+        val detect = HudPrefs.detect(this)
+        binding.btnAlerts.text = getString(if (alerts) R.string.btn_alerts_on else R.string.btn_alerts_off)
+        binding.btnAlerts.setBackgroundColor(
+            if (alerts) Color.parseColor("#8000E676") else Color.parseColor("#807B1F1F")
+        )
+        binding.btnDetect.text = getString(if (detect) R.string.btn_detect_on else R.string.btn_detect_off)
+        binding.btnDetect.setBackgroundColor(
+            if (detect) Color.parseColor("#8000E5FF") else Color.parseColor("#33263238")
+        )
+    }
+
     private fun applyMirrorMode(mirror: Boolean) {
         isMirrored = mirror
-        binding.cameraSurfaceView.scaleX = if (mirror) -1f else 1f
-        binding.hudOverlayView.scaleX = if (mirror) -1f else 1f
+        // A rear-facing phone camera is never a mirror image: flipping it swaps left and right
+        // on screen, so a car on the left appears on the right. The flip only makes sense for
+        // the selfie view or a camera mounted facing the driver, hence the exception here.
+        val flip = mirror && !cameraManager.isSystemBackCamera()
+        binding.cameraSurfaceView.scaleX = if (flip) -1f else 1f
+        binding.hudOverlayView.scaleX = if (flip) -1f else 1f
         binding.btnMirror.setBackgroundColor(
             if (mirror) Color.parseColor("#8000E5FF") else Color.parseColor("#33263238")
         )
@@ -360,6 +384,10 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
             cameraManager.switchMode(savedMode)
         }
         updateCameraSourceButton()
+        updateQuickToggles()
+        // The mirror exception depends on which lens is active, and switchMode() above may have
+        // just changed it.
+        applyMirrorMode(isMirrored)
 
         HudLogger.i(
             TAG,
@@ -370,6 +398,26 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
     }
 
     private fun setupHudControls() {
+        // One-tap switches for use while driving: silence the alerts without losing the boxes,
+        // and drop inference entirely when the CPU or the battery matters more.
+        binding.btnAlerts.setOnClickListener {
+            val next = !HudPrefs.alertsEnabled(this)
+            HudPrefs.setAlertsEnabled(this, next)
+            HudLogger.i(TAG, "alerts -> ${if (next) "ON" else "OFF"}")
+            updateQuickToggles()
+            Toast.makeText(this, if (next) "Alerts ON" else "Alerts MUTED", Toast.LENGTH_SHORT).show()
+        }
+
+        binding.btnDetect.setOnClickListener {
+            val next = !HudPrefs.detect(this)
+            HudPrefs.setDetect(this, next)
+            cameraManager.setDetectionEnabled(next)
+            if (!next) binding.hudOverlayView.clearDetections()
+            HudLogger.i(TAG, "detection -> ${if (next) "ON" else "OFF"}")
+            updateQuickToggles()
+            Toast.makeText(this, if (next) "Detection ON" else "Detection OFF", Toast.LENGTH_SHORT).show()
+        }
+
         binding.btnMirror.setOnClickListener {
             val next = !isMirrored
             applyMirrorMode(next)
@@ -669,7 +717,7 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
         lines += fpsText
         lines += perfText
         val batterySnap = batteryTracker.sample()
-        lines += batterySnap.toHudString()
+        if (HudPrefs.showBattery(this)) lines += batterySnap.toHudString()
         if (inferText.isNotEmpty()) lines += inferText
         if (distanceText.isNotEmpty()) lines += distanceText
         lines += focusText
@@ -1332,7 +1380,14 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
      * Invoked on the ONNX inference thread. [HudOverlayView.setDetections] only swaps a
      * reference and schedules a redraw, so this is safe to call off the UI thread.
      */
-    override fun onDetections(detections: List<Detection>) {
+    override fun onDetections(allDetections: List<Detection>) {
+        // The top third is sky, signs and the far distance: nothing there can be acted on, and
+        // keeping it produced alerts the driver could not use.
+        val detections = if (HudPrefs.detectZoneBottomOnly(this)) {
+            allDetections.filter { (it.top + it.bottom) / 2f >= DETECTION_ZONE_TOP }
+        } else {
+            allDetections
+        }
         val calib = calibration
         val (fw, fh) = cameraManager.frameSize()
         val now = SystemClock.elapsedRealtime()
@@ -1370,7 +1425,9 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
             "%s %.0fm  TTC %.1fs".format(alert.label.uppercase(), alert.distanceM, alert.ttcS)
         }
         binding.hudOverlayView.setAlert(alertText, alert?.warn == true)
-        if (alert != null && lastAlertWarn != alert.warn) alertTone.beep(alert.warn)
+        if (alert != null && lastAlertWarn != alert.warn && HudPrefs.alertsEnabled(this)) {
+            alertTone.beep(alert.warn)
+        }
         lastAlertWarn = alert?.warn
 
         if (detections.size != lastDetectionCount) {

@@ -33,6 +33,12 @@
     <string name="pip_unavailable">This device does not allow picture-in-picture</string>
     <string name="btn_exit_hud">Exit HUD</string>
     <string name="btn_night_mode">Night Mode</string>
+    <string name="btn_alerts_on">🔔 ALERTS</string>
+    <string name="btn_alerts_off">🔕 MUTED</string>
+    <string name="btn_detect_on">DETECT: ON</string>
+    <string name="btn_detect_off">DETECT: OFF</string>
+    <string name="settings_show_battery">Show battery level in the HUD</string>
+    <string name="settings_detect_zone">Detect only in the lower two thirds</string>
     <string name="btn_grid">Grid / Guideline</string>
     <string name="btn_focus_near">FOCUS NEAR</string>
     <string name="btn_focus_far">FOCUS FAR</string>

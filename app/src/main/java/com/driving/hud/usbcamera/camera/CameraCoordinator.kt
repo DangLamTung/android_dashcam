@@ -192,6 +192,15 @@ class CameraCoordinator(
         usbController.setMirror(mirror)
     }
 
+    /** True when the active source is the phone's own rear lens. */
+    fun isSystemBackCamera(): Boolean =
+        currentMode == HudPrefs.MODE_SYSTEM && systemController.isFacingBack
+
+    /** Applies a live detection toggle to the sources that cache the setting at open. */
+    fun setDetectionEnabled(enabled: Boolean) {
+        usbController.setDetectionEnabled(enabled)
+    }
+
     fun startWatchdog() {
         if (currentMode == HudPrefs.MODE_USB) {
             usbController.startWatchdog()

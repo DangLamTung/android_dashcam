@@ -425,6 +425,16 @@ class AusbcCameraController(
         }
     }
 
+    /**
+     * Enables or disables inference on the running stream. The detector session is left built:
+     * rebuilding it costs seconds, and only the per-frame work matters while driving.
+     */
+    fun setDetectionEnabled(enabled: Boolean) {
+        if (detectEnabled == enabled) return
+        detectEnabled = enabled
+        HudLogger.i(TAG, "detection -> $enabled (live)")
+    }
+
     fun setMirror(mirror: Boolean) {
         mirrored = mirror
         // The engine exposes rotation/effects but not a mirror flip; log only.

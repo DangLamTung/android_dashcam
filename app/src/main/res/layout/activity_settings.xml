@@ -269,6 +269,20 @@
             android:text="@string/settings_detect_on"
             android:textColor="@color/hud_text_primary" />
 
+        <Switch
+            android:id="@+id/swDetectZone"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/settings_detect_zone"
+            android:textColor="@color/hud_text_primary" />
+
+        <Switch
+            android:id="@+id/swShowBattery"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/settings_show_battery"
+            android:textColor="@color/hud_text_primary" />
+
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
