@@ -14,7 +14,7 @@ import com.driving.hud.usbcamera.util.HudLogger
  * divide per pixel per frame. The grey padding only occupies the letterbox bars, which never
  * change, so they are painted once and the per-frame loop walks only the image content.
  */
-internal class Letterbox(val inputW: Int, val inputH: Int) {
+internal class Letterbox(val inputW: Int, val inputH: Int) : Preprocessor {
     private companion object {
         const val TAG = "Letterbox"
 
@@ -28,9 +28,14 @@ internal class Letterbox(val inputW: Int, val inputH: Int) {
     /** Model-input pixels per source pixel, and the letterbox offset. */
     var scale = 1f
         private set
-    var dx = 0f
+
+    /** A letterbox is uniform: the same scale applies on both axes. */
+    override val scaleX: Float get() = scale
+    override val scaleY: Float get() = scale
+
+    override var dx = 0f
         private set
-    var dy = 0f
+    override var dy = 0f
         private set
 
     private var geoW = -1
@@ -66,7 +71,7 @@ internal class Letterbox(val inputW: Int, val inputH: Int) {
      * @param nv21 NV21 bytes (Y plane w*h, then interleaved VU), length >= w*h*3/2
      */
     @Synchronized
-    fun fill(nv21: ByteArray, w: Int, h: Int): FloatArray {
+    override fun fill(nv21: ByteArray, w: Int, h: Int): FloatArray {
         prepareGeometry(w, h)
         fillContent(nv21, w, h)
         return chw

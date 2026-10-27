@@ -353,6 +353,16 @@
             android:text="@string/btn_detect_on" />
 
         <Button
+            android:id="@+id/btnLanes"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="4dp"
+            android:backgroundTint="@color/hud_button_bg"
+            android:textColor="@color/hud_text_primary"
+            android:textSize="12sp"
+            android:text="@string/btn_lanes_off" />
+
+        <Button
             android:id="@+id/btnHudCalib"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"

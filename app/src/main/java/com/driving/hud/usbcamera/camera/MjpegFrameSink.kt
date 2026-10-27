@@ -3,6 +3,7 @@ package com.driving.hud.usbcamera.camera
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.graphics.Rect
 import android.view.Surface
 import com.driving.hud.usbcamera.detect.Detection
@@ -37,6 +38,23 @@ class MjpegFrameSink(
     }
 
     private var outputSurface: Surface? = null
+
+    /** Lane passes run on their own thread; see [LaneAnalyzer]. */
+    private val lanes = LaneAnalyzer(context, listener, tag)
+
+    /**
+     * Mirror every frame before it is drawn, detected or recorded.
+     *
+     * The U2 DVR's camera is mounted the other way round in the car, so its JPEGs arrive
+     * left-to-right reversed. Flipping here instead of on the SurfaceView keeps the HUD, the
+     * recording and the detection boxes showing the same, corrected picture.
+     */
+    @Volatile
+    private var mirror = false
+
+    /** Reused destination for [flipHorizontally]: one 720p allocation instead of one per frame. */
+    private var mirrorScratch: Bitmap? = null
+    private var mirrorCanvas: Canvas? = null
 
     /** Built on the inference thread and read from the frame thread: must stay volatile. */
     @Volatile
@@ -83,6 +101,12 @@ class MjpegFrameSink(
         outputSurface = surface
     }
 
+    /** See [mirror]: applied to every decoded frame, so the recording flips with the HUD. */
+    fun setMirror(on: Boolean) {
+        mirror = on
+        HudLogger.i(tag, "setMirror: $on")
+    }
+
     fun setFrameSize(width: Int, height: Int) {
         if (width > 0 && height > 0) {
             frameW = width
@@ -94,6 +118,8 @@ class MjpegFrameSink(
     fun prepare(width: Int = frameW, height: Int = frameH) {
         detectIntervalMs = HudPrefs.detectIntervalMs(context).toLong().coerceAtLeast(0L)
         setFrameSize(width, height)
+        // A new session must not inherit lanes smoothed from the previous camera.
+        lanes.reset()
         initDetector()
     }
 
@@ -157,7 +183,9 @@ class MjpegFrameSink(
 
     /** Decodes [jpeg] and pushes it through render -> record -> detect. */
     fun handleJpegFrame(jpeg: ByteArray) {
-        val bmp = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return
+        val decoded = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return
+        // A mirror copy lives in [mirrorScratch] and outlives this frame; only the decode is ours.
+        val bmp = if (mirror) flipHorizontally(decoded) ?: decoded else decoded
         val w = bmp.width
         val h = bmp.height
         frameW = w
@@ -194,7 +222,7 @@ class MjpegFrameSink(
 
         renderToSurface(bmp, w, h)
 
-        // Only convert to NV21 when recording or a detection pass is due.
+        // Only convert to NV21 when recording, a detection pass is due, or a lane pass is due.
         val recorder = rec
         val isRecActive = recorder != null && recorder.isRecording
         val det = detector
@@ -203,8 +231,9 @@ class MjpegFrameSink(
         // inference instead of leaving it running at full rate on every JPEG source.
         val isDetDue = det != null && HudPrefs.detect(context) &&
             (detectIntervalMs <= 0 || now - lastInferAt >= detectIntervalMs) && !busy.get()
+        val isLaneDue = lanes.isDue()
 
-        if (isRecActive || isDetDue) {
+        if (isRecActive || isDetDue || isLaneDue) {
             val nv21 = getOrFillNv21(bmp, w, h)
             val need = w * h * 3 / 2
 
@@ -212,6 +241,9 @@ class MjpegFrameSink(
                 recorder.submit(ByteBuffer.wrap(nv21), need)
             }
 
+            // The frame has already been mirrored above when the driver has the flip on, so the
+            // lane result needs no extra flip to match the picture.
+            if (isLaneDue) lanes.submit(nv21, w, h)
             if (isDetDue && busy.compareAndSet(false, true)) {
                 lastInferAt = now
                 val copy = nv21.clone()
@@ -231,7 +263,30 @@ class MjpegFrameSink(
             }
         }
 
-        bmp.recycle()
+        decoded.recycle()
+    }
+
+    /** Returns a horizontally flipped copy of [src], or null when the copy failed. */
+    private fun flipHorizontally(src: Bitmap): Bitmap? = try {
+        val existing = mirrorScratch
+        val dst = if (existing != null && existing.width == src.width && existing.height == src.height) {
+            existing
+        } else {
+            existing?.recycle()
+            Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888).also {
+                mirrorScratch = it
+                mirrorCanvas = Canvas(it)
+            }
+        }
+        val canvas = mirrorCanvas ?: Canvas(dst).also { mirrorCanvas = it }
+        canvas.save()
+        canvas.scale(-1f, 1f, src.width / 2f, src.height / 2f)
+        canvas.drawBitmap(src, 0f, 0f, null)
+        canvas.restore()
+        dst
+    } catch (t: Throwable) {
+        HudLogger.w(tag, "Mirror failed: ${t.message}")
+        null
     }
 
     private fun renderToSurface(bmp: Bitmap, w: Int, h: Int) {
@@ -326,13 +381,35 @@ class MjpegFrameSink(
 
     fun destroy() {
         close()
-        // Invalidate an in-flight detector build so it cannot outlive the source.
-        detectorGen.incrementAndGet()
-        try {
-            detector?.close()
-        } catch (_: Throwable) {
-        }
-        detector = null
+        lanes.destroy()
+        // Same rule as reloadDetector: the session is released behind the last queued pass, and
+        // `shutdown()` still runs it because the executor drains its queue first.
+        closeDetectorLater()
+        mirrorScratch?.recycle()
+        mirrorScratch = null
+        mirrorCanvas = null
         inferExecutor.shutdown()
+    }
+
+    /**
+     * Swaps in a different model without reopening the source. See
+     * [SystemCameraController.reloadDetector] for why the close is queued rather than inline.
+     */
+    fun reloadDetector() {
+        closeDetectorLater()
+        initDetector()
+    }
+
+    /** Drops the current session, releasing it on the inference thread (see [reloadDetector]). */
+    private fun closeDetectorLater() {
+        val old = detector
+        detector = null
+        detectorGen.incrementAndGet()
+        if (old == null) return
+        try {
+            inferExecutor.execute { runCatching { old.close() } }
+        } catch (t: Throwable) {
+            HudLogger.w(tag, "could not queue detector close: ${t.message}")
+        }
     }
 }

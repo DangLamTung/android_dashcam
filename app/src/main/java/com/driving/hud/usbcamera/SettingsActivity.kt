@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.widget.Button
 import android.widget.EditText
 import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.SeekBar
 import android.widget.Switch
 import android.widget.TextView
@@ -23,6 +24,12 @@ class SettingsActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "SettingsActivity"
+
+        /** Bundled model assets, named exactly as they sit in `assets/`. */
+        const val MODEL_V10N_224 = "yolov10n-224.onnx"
+        const val MODEL_V10N_320 = "yolov10n-320.onnx"
+        const val MODEL_YOLO26N_256 = "yolo26n-256.onnx"
+        const val MODEL_NANODET_320 = "nanodet-plus-m-320.onnx"
         private const val RES_480_W = 800
         private const val RES_480_H = 480
 
@@ -52,10 +59,12 @@ class SettingsActivity : AppCompatActivity() {
         val swGrid = findViewById<Switch>(R.id.swGrid)
         val swNight = findViewById<Switch>(R.id.swNight)
         val swMirror = findViewById<Switch>(R.id.swMirror)
+        val swHudFlip = findViewById<Switch>(R.id.swHudFlip)
         val swRecordOverlay = findViewById<Switch>(R.id.swRecordOverlay)
         val swSwapChroma = findViewById<Switch>(R.id.swSwapChroma)
         val swDetect = findViewById<Switch>(R.id.swDetect)
         val swDetectZone = findViewById<Switch>(R.id.swDetectZone)
+        val swLanes = findViewById<Switch>(R.id.swLanes)
         val swShowBattery = findViewById<Switch>(R.id.swShowBattery)
         val rbCamUsb = findViewById<RadioButton>(R.id.rbCamUsb)
         val rbCamSystem = findViewById<RadioButton>(R.id.rbCamSystem)
@@ -72,6 +81,11 @@ class SettingsActivity : AppCompatActivity() {
         val sbConf = findViewById<SeekBar>(R.id.sbConfidence)
         val tvConf = findViewById<TextView>(R.id.tvConfidence)
         val etModel = findViewById<EditText>(R.id.etModel)
+        val rgModel = findViewById<RadioGroup>(R.id.rgModel)
+        val rbModelV10n224 = findViewById<RadioButton>(R.id.rbModelV10n224)
+        val rbModelV10n320 = findViewById<RadioButton>(R.id.rbModelV10n320)
+        val rbModelYolo26n256 = findViewById<RadioButton>(R.id.rbModelYolo26n256)
+        val rbModelNanoDet320 = findViewById<RadioButton>(R.id.rbModelNanoDet320)
         val rbFps15 = findViewById<RadioButton>(R.id.rbFps15)
         val rbFps20 = findViewById<RadioButton>(R.id.rbFps20)
         val rbFps30 = findViewById<RadioButton>(R.id.rbFps30)
@@ -87,12 +101,49 @@ class SettingsActivity : AppCompatActivity() {
         swGrid.isChecked = HudPrefs.grid(this)
         swNight.isChecked = HudPrefs.night(this)
         swMirror.isChecked = HudPrefs.mirror(this)
+        swHudFlip.isChecked = HudPrefs.hudFlip(this)
         swRecordOverlay.isChecked = HudPrefs.recordOverlay(this)
         swSwapChroma.isChecked = HudPrefs.swapRecordChroma(this)
         swDetect.isChecked = HudPrefs.detect(this)
         swDetectZone.isChecked = HudPrefs.detectZoneBottomOnly(this)
+        swLanes.isChecked = HudPrefs.laneDetect(this)
         swShowBattery.isChecked = HudPrefs.showBattery(this)
-        etModel.setText(HudPrefs.modelAsset(this))
+        val savedModel = HudPrefs.modelAsset(this)
+        etModel.setText(savedModel)
+        // A bundled model is picked with a radio; anything else is whatever the asset field says.
+        when (savedModel) {
+            MODEL_V10N_224 -> rbModelV10n224.isChecked = true
+            MODEL_V10N_320 -> rbModelV10n320.isChecked = true
+            MODEL_YOLO26N_256 -> rbModelYolo26n256.isChecked = true
+            MODEL_NANODET_320 -> rbModelNanoDet320.isChecked = true
+        }
+        // Selecting a preset model fills the edit text for clarity.
+        rgModel.setOnCheckedChangeListener { _, checkedId ->
+            val preset = when (checkedId) {
+                R.id.rbModelV10n224 -> MODEL_V10N_224
+                R.id.rbModelV10n320 -> MODEL_V10N_320
+                R.id.rbModelYolo26n256 -> MODEL_YOLO26N_256
+                R.id.rbModelNanoDet320 -> MODEL_NANODET_320
+                else -> null
+            }
+            if (preset != null && etModel.text.toString() != preset) {
+                etModel.setText(preset)
+            }
+        }
+        // Typing in the custom field clears presets unless matching one of them.
+        etModel.setOnFocusChangeListener { _, hasFocus ->
+            if (hasFocus) {
+                val current = etModel.text.toString().trim()
+                val match = when (current) {
+                    MODEL_V10N_224 -> R.id.rbModelV10n224
+                    MODEL_V10N_320 -> R.id.rbModelV10n320
+                    MODEL_YOLO26N_256 -> R.id.rbModelYolo26n256
+                    MODEL_NANODET_320 -> R.id.rbModelNanoDet320
+                    else -> null
+                }
+                if (match == null) rgModel.clearCheck()
+            }
+        }
 
         when (HudPrefs.cameraMode(this)) {
             HudPrefs.MODE_SYSTEM -> rbCamSystem.isChecked = true
@@ -152,10 +203,12 @@ class SettingsActivity : AppCompatActivity() {
             HudPrefs.setGrid(this, swGrid.isChecked)
             HudPrefs.setNight(this, swNight.isChecked)
             HudPrefs.setMirror(this, swMirror.isChecked)
+            HudPrefs.setHudFlip(this, swHudFlip.isChecked)
             HudPrefs.setRecordOverlay(this, swRecordOverlay.isChecked)
             HudPrefs.setSwapRecordChroma(this, swSwapChroma.isChecked)
             HudPrefs.setDetect(this, swDetect.isChecked)
             HudPrefs.setDetectZoneBottomOnly(this, swDetectZone.isChecked)
+            HudPrefs.setLaneDetect(this, swLanes.isChecked)
             HudPrefs.setShowBattery(this, swShowBattery.isChecked)
 
             val mode = when {
@@ -175,7 +228,14 @@ class SettingsActivity : AppCompatActivity() {
             }
 
             HudPrefs.setConfidence(this, sbConf.progress.coerceAtLeast(1) / 100f)
-            HudPrefs.setModelAsset(this, etModel.text.toString().trim().ifEmpty { HudPrefs.DEFAULT_MODEL })
+            val pickedModel = when {
+                rbModelYolo26n256.isChecked -> MODEL_YOLO26N_256
+                rbModelNanoDet320.isChecked -> MODEL_NANODET_320
+                rbModelV10n320.isChecked -> MODEL_V10N_320
+                rbModelV10n224.isChecked -> MODEL_V10N_224
+                else -> etModel.text.toString().trim().ifEmpty { HudPrefs.DEFAULT_MODEL }
+            }
+            HudPrefs.setModelAsset(this, pickedModel)
 
             // Geometry calibration. Values are clamped so a typo cannot produce a division by
             // zero or a horizon behind the camera.
@@ -211,7 +271,8 @@ class SettingsActivity : AppCompatActivity() {
             }
             HudPrefs.setDetectIntervalMs(this, interval)
 
-            HudLogger.i(TAG, "saved: grid=${swGrid.isChecked} night=${swNight.isChecked} mirror=${swMirror.isChecked} res=${w}x$h fps=$fps detect=${swDetect.isChecked} conf=${sbConf.progress} interval=${interval}ms")
+            HudLogger.i(TAG, "saved: grid=${swGrid.isChecked} night=${swNight.isChecked} mirror=${swMirror.isChecked} res=${w}x$h fps=$fps detect=${swDetect.isChecked} conf=${sbConf.progress} interval=${interval}ms " +
+                "model=$pickedModel lanes=${swLanes.isChecked}")
             Toast.makeText(this, "Saved. Reconnect to apply preview size.", Toast.LENGTH_LONG).show()
             finish()
         }

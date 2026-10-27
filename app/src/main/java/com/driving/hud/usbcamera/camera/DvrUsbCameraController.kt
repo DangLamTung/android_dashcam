@@ -123,6 +123,27 @@ class DvrUsbCameraController(
 
         /** Re-open attempts that are tried back-to-back before falling back to REOPEN_BACKOFF_MS. */
         const val REOPENS_BEFORE_BACKOFF = 2
+
+        /**
+         * A live DVR delivers ~15 frames/s. This long without a *new* frame means the session is
+         * dead even if its reader thread still believes it is streaming - which is what the SAF
+         * preview path looks like when the DVR is unplugged: every poll succeeds, the bytes are
+         * just frozen.
+         */
+        const val STALL_RESTART_MS = 8000L
+
+        /** A fresh session that never shows a frame within this is abandoned. */
+        const val SESSION_START_TIMEOUT_MS = 15000L
+
+        /**
+         * Self-repairs in a row that produced no video. After this the source stops retrying and
+         * reports the failure, so a Connect tap (or a replug) starts from a clean session.
+         *
+         * Five rather than three: a car hitting a bump can bounce the OTG contact through several
+         * re-claims in a row, and each of those is cheap. The counter is reset by the first frame
+         * that arrives, so only a genuinely absent DVR reaches the limit.
+         */
+        const val MAX_FAILED_RECOVERIES = 5
     }
 
     private val sink = MjpegFrameSink(context, listener, TAG)
@@ -137,8 +158,24 @@ class DvrUsbCameraController(
     /** Guards the hand-over of the connection between [close] and the reader thread. */
     private val releaseLock = Any()
 
+    /**
+     * Serialises session start/stop. `open()` is called from the UI thread (Connect) *and* from
+     * the reader itself (preview stall recovery), and `close()` from the UI thread while
+     * `onAppBackgrounded` runs, so without this two readers could be started from one interface
+     * claim - or a start could interleave with the teardown that is still releasing it.
+     */
+    private val lifecycleLock = Any()
+
     @Volatile
     private var running = false
+
+    /**
+     * Whether a session is *wanted*. Set by [open], cleared by [close]; the readers' own
+     * self-repair path honours it, so a restart that was already in flight when the app went to
+     * the background cannot reopen the DVR behind the lifecycle.
+     */
+    @Volatile
+    private var wantOpen = false
 
     @Volatile
     var isOpen = false
@@ -148,6 +185,28 @@ class DvrUsbCameraController(
     private var lastFrameHash = 0
     private var stalePolls = 0
     private var framesDelivered = 0
+
+    /**
+     * Wall-clock time of the last frame delivered to the sink, or of the start of the current
+     * session while none has arrived yet. The preview loop never sees a USB error - a frozen
+     * VSFILE just returns the same bytes - so staleness has to be measured here.
+     */
+    @Volatile
+    private var lastFrameAtMs = 0L
+
+    /** When the current reader session started, so a session that never delivers can time out. */
+    @Volatile
+    private var sessionStartedAtMs = 0L
+
+    /** Self-repairs in a row that produced no new frame. */
+    private var failedRecoveries = 0
+
+    /**
+     * Bumped whenever a session is torn down, so a reader that is still winding down cannot
+     * resurrect itself after the next session has already set `running` back to true.
+     */
+    @Volatile
+    private var sessionGen = 0
 
     /** Frame size reported by the last good slot header, used to read a frame in ONE transfer. */
     private var lastFrameBytes = 0
@@ -204,7 +263,11 @@ class DvrUsbCameraController(
      * USB access is granted through a system dialog, so the source has to finish opening
      * when the answer arrives rather than failing.
      */
-    private fun registerPermissionReceiver() {
+    private fun registerPermissionReceiver() = synchronized(lifecycleLock) {
+        registerPermissionReceiverLocked()
+    }
+
+    private fun registerPermissionReceiverLocked() {
         if (permissionReceiver != null) return
         val rx = object : android.content.BroadcastReceiver() {
             override fun onReceive(receiverContext: Context?, intent: android.content.Intent?) {
@@ -280,6 +343,9 @@ class DvrUsbCameraController(
 
     fun setOutputSurface(surface: Surface?) = sink.setOutputSurface(surface)
 
+    /** Mirrors the DVR's JPEG frames (preview, recording and detections alike). */
+    fun setMirror(mirror: Boolean) = sink.setMirror(mirror)
+
     /**
      * Starts the detector session before the DVR is opened. Even with the backend remembered
      * from a previous run, creating the session costs seconds of native initialisation (model
@@ -296,28 +362,49 @@ class DvrUsbCameraController(
     }
 
     fun open(forcePermission: Boolean = false) {
+        synchronized(lifecycleLock) {
+            wantOpen = true
+            openLocked(forcePermission)
+        }
+    }
+
+    /**
+     * Restart requested by a reader whose session died. Runs on its own short-lived thread so the
+     * dying reader is not joined while it waits for [lifecycleLock] (the UI may be holding it).
+     */
+    private fun restartIfWanted() {
+        Thread({
+            synchronized(lifecycleLock) {
+                if (!wantOpen) {
+                    HudLogger.i(TAG, "session restart skipped: the source was closed")
+                    return@synchronized
+                }
+                openLocked(forcePermission = false)
+            }
+        }, "dvr-restart").apply { isDaemon = true }.start()
+    }
+
+    private fun openLocked(forcePermission: Boolean) {
         if (forcePermission) {
             permissionDenied = false
             badSlots.clear()
             staleSlots.clear()
+            // A user-initiated open starts the recovery budget over.
+            failedRecoveries = 0
         }
-        // A session that is already streaming wins; otherwise wait for the previous one to hand
-        // the interface back before claiming it again.
-        if (isOpen) return
-        val previous = thread
-        if (previous != null && previous.isAlive) {
-            HudLogger.i(TAG, "waiting for the previous DVR session to release the interface")
-            previous.interrupt()
-            try {
-                previous.join(PREVIOUS_SESSION_JOIN_MS)
-            } catch (_: InterruptedException) {
-            }
-            if (previous.isAlive) {
-                HudLogger.w(TAG, "previous session still alive; not claiming the interface twice")
-                return
-            }
+        // A session that is still delivering frames wins. One that has gone quiet is dead even
+        // though its reader still says it is open (the SAF preview path keeps polling a frozen
+        // file forever), so a Connect tap must tear it down instead of silently returning -
+        // otherwise the only fix is restarting the app.
+        if (isOpen && !forcePermission && !isSessionStale()) return
+        if (isOpen) {
+            HudLogger.w(TAG, "re-opening the DVR: the previous session stopped delivering video")
+            listener.onStatusChanged("U2 DVR: reconnecting")
         }
-        thread = null
+        if (!stopReader()) {
+            HudLogger.w(TAG, "previous session is still alive; not claiming the interface twice")
+            return
+        }
         registerReceiver()
         // The file source is opt-in through a folder grant and wins when one exists. It is offered
         // because the Bulk-Only Transport path, which streams fine on other hardware, cannot
@@ -331,8 +418,10 @@ class DvrUsbCameraController(
             isOpen = true
             running = true
             framesDelivered = 0
+            markSessionStarted()
             listener.onStatusChanged("U2 DVR: reading preview file")
-            thread = Thread({ previewLoop() }, "dvr-preview").apply {
+            val gen = sessionGen
+            thread = Thread({ previewLoop(gen) }, "dvr-preview").apply {
                 isDaemon = true
                 start()
             }
@@ -372,10 +461,73 @@ class DvrUsbCameraController(
         HudLogger.i(TAG, "claimed interface 0; starting BOT stream reader")
 
         running = true
-        thread = Thread({ streamLoop() }, "dvr-stream").apply {
+        markSessionStarted()
+        val gen = sessionGen
+        thread = Thread({ streamLoop(gen) }, "dvr-stream").apply {
             isDaemon = true
             start()
         }
+    }
+
+    /** Starts the stall clock for a session that is about to begin (see [isSessionStale]). */
+    private fun markSessionStarted() {
+        val now = System.currentTimeMillis()
+        sessionStartedAtMs = now
+        lastFrameAtMs = now
+    }
+
+    /**
+     * True when the current session has stopped producing frames. A session that never delivered
+     * one is judged by [SESSION_START_TIMEOUT_MS] instead, so the first, slower claim is not
+     * mistaken for a stalled stream.
+     */
+    private fun isSessionStale(): Boolean {
+        if (!isOpen) return true
+        if (sessionStartedAtMs == 0L) return true
+        val now = System.currentTimeMillis()
+        val neverDelivered = lastFrameAtMs <= sessionStartedAtMs
+        return if (neverDelivered) {
+            now - sessionStartedAtMs > SESSION_START_TIMEOUT_MS
+        } else {
+            now - lastFrameAtMs > STALL_RESTART_MS
+        }
+    }
+
+    /**
+     * Tears down the previous reader. Returns false only when it is still holding the USB
+     * connection, because claiming the interface twice would fail.
+     */
+    private fun stopReader(): Boolean = synchronized(lifecycleLock) { stopReaderLocked() }
+
+    private fun stopReaderLocked(): Boolean {
+        running = false
+        isOpen = false
+        sessionGen++
+        val previous = thread
+        if (previous == null) {
+            releaseStreaming()
+            return true
+        }
+        if (!previous.isAlive) {
+            thread = null
+            releaseStreaming()
+            return true
+        }
+        HudLogger.i(TAG, "waiting for the previous DVR session to release the interface")
+        previous.interrupt()
+        try {
+            previous.join(PREVIOUS_SESSION_JOIN_MS)
+        } catch (_: InterruptedException) {
+        }
+        if (previous.isAlive) {
+            // Only the Bulk-Only Transport path holds the interface; a preview reader that is
+            // still winding down can be left behind, it stops at its next generation check.
+            if (connection != null) return false
+            return true
+        }
+        thread = null
+        releaseStreaming()
+        return true
     }
 
     /**
@@ -451,7 +603,9 @@ class DvrUsbCameraController(
      * answering, only a fresh claim brings the video back - a replug is not needed - so the reader
      * repairs itself instead of leaving the HUD dead until the user switches source.
      */
-    private fun reclaim(): Boolean {
+    private fun reclaim(): Boolean = synchronized(lifecycleLock) { reclaimLocked() }
+
+    private fun reclaimLocked(): Boolean {
         if (!running) return false
         HudLogger.w(TAG, "re-claiming the DVR interface after a stall")
         badSlots.clear()
@@ -476,15 +630,45 @@ class DvrUsbCameraController(
         return true
     }
 
-    /** Reads the DVR's preview file and feeds it through the shared JPEG sink. */
-    private fun previewLoop() {
+    /**
+     * Reads the DVR's preview file and feeds it through the shared JPEG sink.
+     *
+     * A frozen VSFILE cannot be told apart from a healthy one at the read level - every poll
+     * succeeds, the bytes just never change - so staleness is judged against [lastFrameAtMs].
+     * Without this the HUD stayed on "streaming" forever and a Connect tap did nothing, because
+     * `isOpen` was still true; only restarting the app cleared it.
+     */
+    private fun previewLoop(gen: Int) {
         var announced = false
         var lastHash = 0
         var misses = 0
+        var restart = false
         try {
             sink.prepare()
-            while (running) {
+            while (running && sessionGen == gen) {
+                val quietMs = System.currentTimeMillis() - lastFrameAtMs
+                if (quietMs > STALL_RESTART_MS) {
+                    failedRecoveries++
+                    HudLogger.w(
+                        TAG,
+                        "preview file has not changed for $quietMs ms " +
+                            "($failedRecoveries/$MAX_FAILED_RECOVERIES)"
+                    )
+                    if (failedRecoveries >= MAX_FAILED_RECOVERIES) {
+                        HudLogger.e(TAG, "DVR preview is gone; waiting for a Connect tap", null)
+                        listener.onError("U2 DVR: no new video — tap Connect to retry")
+                        running = false
+                        isOpen = false
+                    } else {
+                        listener.onStatusChanged("U2 DVR: no new frame — reconnecting")
+                        restart = true
+                    }
+                    break
+                }
                 val bytes = DvrPreviewFile.readPreview(context)
+                // The read can take seconds on a USB volume: do not act on it if this session
+                // was torn down (and possibly replaced) while it was in flight.
+                if (sessionGen != gen) break
                 val jpeg = bytes?.let { DvrFrameParser.lastCompleteFrame(it) }
                 if (jpeg == null) {
                     misses++
@@ -501,6 +685,8 @@ class DvrUsbCameraController(
                 val hash = jpeg.contentHashCode()
                 if (hash != lastHash) {
                     lastHash = hash
+                    failedRecoveries = 0
+                    lastFrameAtMs = System.currentTimeMillis()
                     if (!announced) {
                         sink.setFrameSize(PREVIEW_W, PREVIEW_H)
                         listener.onStatusChanged("U2 DVR: streaming")
@@ -515,17 +701,24 @@ class DvrUsbCameraController(
                 Thread.sleep(PREVIEW_POLL_MS)
             }
         } catch (t: Throwable) {
-            if (running) {
+            if (running && sessionGen == gen) {
                 HudLogger.e(TAG, "preview loop failed", t)
                 listener.onError("U2 DVR preview failed: ${t.message}")
             }
         } finally {
-            isOpen = false
+            if (sessionGen == gen) isOpen = false
             HudLogger.i(TAG, "preview loop finished after $framesDelivered frames")
+        }
+        // A session that stalled is rebuilt from scratch: re-resolving the document picks up a
+        // volume that was unmounted and mounted again.
+        if (restart && running && sessionGen == gen) {
+            HudLogger.i(TAG, "restarting the DVR preview session")
+            thread = null
+            restartIfWanted()
         }
     }
 
-    private fun streamLoop() {
+    private fun streamLoop(gen: Int) {
         var announced = false
         var misses = 0
         var reclaims = 0
@@ -533,7 +726,7 @@ class DvrUsbCameraController(
         try {
             // See CLAIM_SETTLE_MS: the DVR is not ready for commands the instant the claim lands.
             Thread.sleep(CLAIM_SETTLE_MS)
-            while (running) {
+            while (running && sessionGen == gen) {
                 val frame = readFrame()
                 if (frame == null) {
                     misses++
@@ -553,6 +746,10 @@ class DvrUsbCameraController(
                         if (reclaim()) {
                             misses = 0
                             announced = false
+                            failedRecoveries = 0
+                            lastFrameAtMs = System.currentTimeMillis()
+                        } else if (giveUpOrRetry("USB pipe did not come back")) {
+                            break
                         }
                         // Keep trying, but stop hammering a DVR that is not coming back: each
                         // re-open resets the device, and a fast loop would only trip its watchdog
@@ -584,8 +781,10 @@ class DvrUsbCameraController(
                         if (reclaim()) {
                             misses = 0
                             announced = false
-                        } else {
-                            Thread.sleep(RECLAIM_RETRY_MS)
+                            failedRecoveries = 0
+                            lastFrameAtMs = System.currentTimeMillis()
+                        } else if (giveUpOrRetry("video did not come back")) {
+                            break
                         }
                     }
                     Thread.sleep(if (misses >= STALL_GIVE_UP_POLLS) 500 else 60)
@@ -598,29 +797,60 @@ class DvrUsbCameraController(
                 misses = 0
                 reclaims = 0
                 reopenAttempts = 0
+                failedRecoveries = 0
                 if (!announced) {
                     sink.setFrameSize(1280, 720)
                     listener.onStatusChanged("U2 DVR: streaming")
                     announced = true
                 }
                 sink.handleJpegFrame(frame)
+                lastFrameAtMs = System.currentTimeMillis()
                 framesDelivered++
                 if (framesDelivered % 30 == 0) {
                     HudLogger.i(TAG, "delivered $framesDelivered frames from slot $slotLba")
                 }
             }
         } catch (t: Throwable) {
-            if (running) {
+            if (running && sessionGen == gen) {
                 HudLogger.e(TAG, "stream loop failed", t)
                 listener.onError("U2 DVR stream failed: ${t.message}")
             }
         } finally {
             // The reader owns the teardown: close() is called from the UI thread and must not wait
             // for a USB transfer that may still be in flight.
-            isOpen = false
+            if (sessionGen == gen) isOpen = false
             releaseStreaming()
             HudLogger.i(TAG, "stream loop finished after $framesDelivered frames")
         }
+    }
+
+    /**
+     * Records a failed self-repair. Returns true when the session should be abandoned: after
+     * [MAX_FAILED_RECOVERIES] the loop stops claiming a DVR that is not coming back, so the next
+     * Connect tap (or a replug) starts from a clean state instead of hitting an "already open"
+     * session that never delivers anything.
+     */
+    private fun giveUpOrRetry(reason: String): Boolean {
+        requestPermissionIfMissing()
+        failedRecoveries++
+        if (failedRecoveries < MAX_FAILED_RECOVERIES) return false
+        HudLogger.e(TAG, "$reason after $failedRecoveries re-claims; waiting for Connect", null)
+        listener.onError("U2 DVR: $reason — tap Connect to retry")
+        running = false
+        isOpen = false
+        return true
+    }
+
+    /** Re-asks for USB access when a re-claim failed because the permission went away. */
+    private fun requestPermissionIfMissing() {
+        val usb = context.getSystemService(Context.USB_SERVICE) as? UsbManager ?: return
+        val device = DvrUsbProbe.findDevice(context) ?: return
+        if (usb.hasPermission(device) || permissionRequestPending) return
+        HudLogger.i(TAG, "USB access was lost while streaming - requesting it again")
+        permissionRequestPending = true
+        registerPermissionReceiver()
+        listener.onStatusChanged("U2 DVR: grant USB access to resume")
+        DvrUsbProbe.requestPermission(context)
     }
 
     /** Reads one JPEG frame, or null when the ring is being rewritten / unreadable. */
@@ -826,13 +1056,19 @@ class DvrUsbCameraController(
 
     fun frameSize(): Pair<Int, Int> = sink.frameSize()
 
-    fun close() {
+    fun close() = synchronized(lifecycleLock) { closeLocked() }
+
+    private fun closeLocked() {
+        // Cleared before the lock is released, so a pending restart sees it.
+        wantOpen = false
         // Deliberately does NOT wait for the reader: this is called from MainActivity's "
         // switchMode/onAppBackgrounded", i.e. on the UI thread, and the reader may be blocked in a
         // USB transfer. The reader notices `running = false`, finishes its loop and releases the
         // interface in [releaseStreaming]; open() waits for that before claiming it again.
         val hadReader = thread != null
         running = false
+        // Any reader still winding down must not resume if a new session restarts immediately.
+        sessionGen++
         permissionRequestPending = false
         unregisterPermissionReceiver()
         if (!hadReader) releaseStreaming()
@@ -870,5 +1106,9 @@ class DvrUsbCameraController(
         close()
         unregister()
         sink.destroy()
+    }
+
+    fun reloadDetector() {
+        sink.reloadDetector()
     }
 }

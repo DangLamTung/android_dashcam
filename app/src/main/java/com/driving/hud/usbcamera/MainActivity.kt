@@ -45,6 +45,7 @@ import com.driving.hud.usbcamera.camera.FocusInfo
 import com.driving.hud.usbcamera.camera.Telemetry
 import com.driving.hud.usbcamera.calib.PinholeDistanceEstimator
 import com.driving.hud.usbcamera.detect.Detection
+import com.driving.hud.usbcamera.detect.LaneResult
 import com.driving.hud.usbcamera.util.BatteryTracker
 import com.driving.hud.usbcamera.util.CrashReporter
 import com.driving.hud.usbcamera.util.HudLogger
@@ -111,7 +112,8 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
     /** Turns per-frame detections into stable tracks and a time-to-collision alert. */
     private val tracker = VehicleTracker()
 
-    private val alertTone = AlertTone()
+    private val alertToneDelegate = lazy { AlertTone(this) }
+    private val alertTone by alertToneDelegate
 
     /** Last alert level spoken, so the tone fires on the transition rather than every frame. */
     private var lastAlertWarn: Boolean? = null
@@ -129,6 +131,12 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
 
     @Volatile
     private var focusText: String = "FOCUS --"
+
+    /** Lane offset readout: "LANE +0.12" means the lane centre is 0.12 lane widths to the right. */
+    @Volatile
+    private var laneText: String = ""
+
+    private var lastModelAsset: String = ""
 
     // Android 13+ requires CAMERA permission to grant USB access to UVC cameras.
     private val cameraPermissionLauncher =
@@ -199,6 +207,8 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
         setupHudControls()
         setupCalibrationControls()
         applySavedSettings()
+        // Decode the alert samples now, not while a collision warning is already due.
+        alertTone.warmUp()
 
         // Keep HUD overlay telemetry floating cleanly above the control bar
         binding.controlBar.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
@@ -335,10 +345,11 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
         }
     }
 
-    /** Reflects the two quick switches in the control bar. */
+    /** Reflects the quick switches in the control bar. */
     private fun updateQuickToggles() {
         val alerts = HudPrefs.alertsEnabled(this)
         val detect = HudPrefs.detect(this)
+        val lanes = HudPrefs.laneDetect(this)
         binding.btnAlerts.text = getString(if (alerts) R.string.btn_alerts_on else R.string.btn_alerts_off)
         binding.btnAlerts.setBackgroundColor(
             if (alerts) Color.parseColor("#8000E676") else Color.parseColor("#807B1F1F")
@@ -347,20 +358,33 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
         binding.btnDetect.setBackgroundColor(
             if (detect) Color.parseColor("#8000E5FF") else Color.parseColor("#33263238")
         )
+        binding.btnLanes.text = getString(if (lanes) R.string.btn_lanes_on else R.string.btn_lanes_off)
+        binding.btnLanes.setBackgroundColor(
+            if (lanes) Color.parseColor("#8000E676") else Color.parseColor("#33263238")
+        )
     }
 
     private fun applyMirrorMode(mirror: Boolean) {
         isMirrored = mirror
-        // A rear-facing phone camera is never a mirror image: flipping it swaps left and right
-        // on screen, so a car on the left appears on the right. The flip only makes sense for
-        // the selfie view or a camera mounted facing the driver, hence the exception here.
-        val flip = mirror && !cameraManager.isSystemBackCamera()
-        binding.cameraSurfaceView.scaleX = if (flip) -1f else 1f
-        binding.hudOverlayView.scaleX = if (flip) -1f else 1f
+        // Two different jobs, deliberately kept apart:
+        //
+        //  - MIRROR corrects a camera that is mounted backwards. The recorded file must match
+        //    what the driver sees, so on the JPEG sources the *pixels* are flipped and the views
+        //    are left alone. The other sources have no pixel path, so the view carries it.
+        //  - HUD FLIP is a windshield reflection: the picture on screen is mirrored, the
+        //    recording stays normal. That can only be a view transform, and it must be the only
+        //    one - flipping the pixels as well would cancel it out and drag the boxes off the
+        //    picture with it.
+        val windshield = HudPrefs.hudFlip(this)
+        val flipFrames = mirror && !windshield
+        val flipView = windshield ||
+            (flipFrames && !cameraManager.mirrorsInFrames() && !cameraManager.isSystemBackCamera())
+        binding.cameraSurfaceView.scaleX = if (flipView) -1f else 1f
+        binding.hudOverlayView.scaleX = if (flipView) -1f else 1f
         binding.btnMirror.setBackgroundColor(
             if (mirror) Color.parseColor("#8000E5FF") else Color.parseColor("#33263238")
         )
-        cameraManager.setMirror(mirror)
+        cameraManager.setMirror(flipFrames)
     }
 
     private fun applySavedSettings() {
@@ -379,21 +403,41 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
         maybeRefreshCalibration()
         refreshTelemetry()
 
+        val savedModel = HudPrefs.modelAsset(this)
+        if (lastModelAsset.isNotEmpty() && lastModelAsset != savedModel) {
+            HudLogger.i(TAG, "Detection model changed: $lastModelAsset -> $savedModel, reloading detector")
+            lastModelAsset = savedModel
+            cameraManager.reloadDetector()
+        } else {
+            lastModelAsset = savedModel
+        }
+
         val savedMode = HudPrefs.cameraMode(this)
         if (savedMode != cameraManager.currentMode) {
             cameraManager.switchMode(savedMode)
+            // Lanes fitted for the previous source do not belong on the new picture.
+            binding.hudOverlayView.clearLanes()
         }
         updateCameraSourceButton()
         updateQuickToggles()
         // The mirror exception depends on which lens is active, and switchMode() above may have
         // just changed it.
         applyMirrorMode(isMirrored)
+        // Settings can flip the lane switch, which decides whether the UVC source requests
+        // NV21 frames at all.
+        cameraManager.onLaneSettingChanged()
+        if (!HudPrefs.laneDetect(this)) {
+            binding.hudOverlayView.clearLanes()
+            laneText = ""
+            refreshTelemetry()
+        }
 
         HudLogger.i(
             TAG,
             "applied settings: grid=$grid night=$night mirror=$isMirrored mode=$savedMode " +
                 "res=${HudPrefs.previewWidth(this)}x${HudPrefs.previewHeight(this)} " +
-                "detect=${HudPrefs.detect(this)} conf=${HudPrefs.confidence(this)}"
+                "detect=${HudPrefs.detect(this)} conf=${HudPrefs.confidence(this)} " +
+                "lanes=${HudPrefs.laneDetect(this)}"
         )
     }
 
@@ -418,12 +462,27 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
             Toast.makeText(this, if (next) "Detection ON" else "Detection OFF", Toast.LENGTH_SHORT).show()
         }
 
+        binding.btnLanes.setOnClickListener {
+            val next = !HudPrefs.laneDetect(this)
+            HudPrefs.setLaneDetect(this, next)
+            // The UVC source only receives pixels in the format the lane pass needs when it is on.
+            cameraManager.onLaneSettingChanged()
+            if (!next) {
+                binding.hudOverlayView.clearLanes()
+                laneText = ""
+                refreshTelemetry()
+            }
+            HudLogger.i(TAG, "lanes -> ${if (next) "ON" else "OFF"}")
+            updateQuickToggles()
+            Toast.makeText(this, if (next) "Lane detection ON" else "Lane detection OFF", Toast.LENGTH_SHORT).show()
+        }
+
         binding.btnMirror.setOnClickListener {
             val next = !isMirrored
             applyMirrorMode(next)
             HudPrefs.setMirror(this, next)
             HudLogger.i(TAG, "Mirror -> ${if (next) "ON" else "OFF"}")
-            Toast.makeText(this, if (next) "Flip: ON" else "Flip: OFF", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, if (next) "Mirror: ON" else "Mirror: OFF", Toast.LENGTH_SHORT).show()
         }
 
         binding.btnNightMode.setOnClickListener {
@@ -719,6 +778,7 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
         val batterySnap = batteryTracker.sample()
         if (HudPrefs.showBattery(this)) lines += batterySnap.toHudString()
         if (inferText.isNotEmpty()) lines += inferText
+        if (laneText.isNotEmpty()) lines += laneText
         if (distanceText.isNotEmpty()) lines += distanceText
         lines += focusText
         if (cameraManager.isRecording()) {
@@ -841,6 +901,10 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
                     4 -> cameraManager.switchMode(HudPrefs.MODE_DVR)
                 }
                 updateCameraSourceButton()
+                // Where the flip is applied depends on the new source (frame vs SurfaceView).
+                applyMirrorMode(isMirrored)
+                // Lanes fitted for the previous source do not belong on the new picture.
+                binding.hudOverlayView.clearLanes()
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -1210,7 +1274,7 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
     override fun onDestroy() {
         super.onDestroy()
         HudLogger.i(TAG, "onDestroy - release native + close logger")
-        alertTone.release()
+        if (alertToneDelegate.isInitialized()) alertTone.release()
         cameraManager.unregister()
         cameraManager.destroy()
         CameraNativeBridge.nativeRelease()
@@ -1330,8 +1394,7 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
         }
     }
 
-    override fun onTelemetry(t: Telemetry) {
-        fpsText = if (t.frameIntervalMs > 0f) {
+    override fun onTelemetry(t: Telemetry) {        fpsText = if (t.frameIntervalMs > 0f) {
             "FPS ${t.fps}  · ${pct1(t.frameIntervalMs)}ms/frame"
         } else {
             "FPS ${t.fps}"
@@ -1372,6 +1435,25 @@ class MainActivity : AppCompatActivity(), AusbcCameraController.CameraEventListe
             binding.btnFocusAf.isEnabled = info.supported && cameraManager.hasAutoFocus()
             binding.btnFocusAf.setTextColor(
                 if (info.auto) Color.parseColor("#00E676") else Color.parseColor("#CC00E5FF")
+            )
+        }
+    }
+
+    /**
+     * Invoked on the lane thread, a couple of times a second. [HudOverlayView.setLanes] only
+     * swaps a reference and schedules a redraw, so this is safe to call off the UI thread.
+     */
+    override fun onLanes(result: LaneResult) {
+        binding.hudOverlayView.setLanes(result)
+        laneText = when {
+            !HudPrefs.laneDetect(this) -> ""
+            result.offsetLanes.isNaN() -> "LANE --"
+            else -> java.lang.String.format(
+                java.util.Locale.US,
+                "LANE %+.2f%s · %.1fms",
+                result.offsetLanes,
+                if (result.departure) " ⚠" else "",
+                result.tookMs,
             )
         }
     }

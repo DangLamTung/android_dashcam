@@ -10,6 +10,7 @@ import com.driving.hud.usbcamera.R
 import com.driving.hud.usbcamera.detect.Detector
 import com.driving.hud.usbcamera.detect.DetectorFactory
 import com.driving.hud.usbcamera.detect.Detection
+import com.driving.hud.usbcamera.detect.LaneResult
 import com.driving.hud.usbcamera.detect.OnnxDetector
 import com.driving.hud.usbcamera.record.MkvRecorder
 import com.driving.hud.usbcamera.record.RecordingStorageManager
@@ -81,6 +82,22 @@ class AusbcCameraController(
         private const val SAFE_W = 1280
         private const val SAFE_H = 720
         private const val SAFE_FPS = 30
+
+        /**
+         * Frames that stop arriving while the session still believes it is streaming. An OTG
+         * connector bouncing on a bump can wedge the isochronous pipe without a USB detach, and
+         * nothing in the engine recovers from that - the HUD would just keep showing the last
+         * frame. Five seconds is well past any normal hiccup at 15-30 fps.
+         */
+        private const val STALL_RECONNECT_MS = 5000L
+
+        /** Gap between watchdog checks, and the minimum gap between two recovery attempts. */
+        private const val WATCHDOG_PERIOD_S = 2L
+        private const val RECONNECT_MIN_GAP_MS = 8000L
+
+        /** Delay before re-trying an open that was refused because a teardown was in flight. */
+        private const val OPEN_RETRY_MS = 400L
+        private const val OPEN_RETRY_ATTEMPTS = 5
     }
 
     interface CameraEventListener {
@@ -94,6 +111,12 @@ class AusbcCameraController(
         fun onFocusChanged(info: FocusInfo)
         /** Emitted once a second with the live HUD readout. */
         fun onTelemetry(t: Telemetry)
+
+        /**
+         * Result of one lane pass, on the lane thread. Sources that cannot analyse lanes (or
+         * have them switched off) simply never call it.
+         */
+        fun onLanes(result: LaneResult) {}
     }
 
     private var monitor: USBMonitor? = null
@@ -123,11 +146,21 @@ class AusbcCameraController(
     private var frameW = PREVIEW_W
     private var frameH = PREVIEW_H
     private var nv21 = ByteArray(0)
-    private var busy = AtomicBoolean(false)
+
+    /**
+     * Luma-only copy for a lane pass that has to run while [nv21] still belongs to an
+     * inference in flight. Reusing one buffer for both would let this frame overwrite the
+     * pixels the detector is reading.
+     */
+    private var laneLuma = ByteArray(0)
+    private val busy = AtomicBoolean(false)
     private var lastInferAt = 0L
     private val inferExecutor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "onnx-infer").apply { isDaemon = true }
     }
+
+    /** Lane passes run on their own thread so they never delay an inference or a frame copy. */
+    private val lanes = LaneAnalyzer(context, listener, TAG)
 
     /**
      * Bumped whenever the detector is torn down. Building one takes seconds, so a camera
@@ -159,6 +192,20 @@ class AusbcCameraController(
     private var cachedTempPath: String? = null
     private var streamWatchdog: ScheduledFuture<*>? = null
     private var fallbackAttempted = false
+
+    /** Periodic "is the stream still alive?" watchdog; see [startWatchdog]. */
+    private var runtimeWatchdog: ScheduledFuture<*>? = null
+
+    /** Last time the watchdog forced a reconnect, so it cannot loop on a dead camera. */
+    @Volatile
+    private var lastRecoveryAtMs = 0L
+
+    @Volatile
+    private var recoveryAttempts = 0
+
+    /** Pending re-try of an open that arrived while a teardown was still running. */
+    private var openRetry: ScheduledFuture<*>? = null
+    private var openRetries = 0
     private var statsFuture: ScheduledFuture<*>? = null
     private var statsTick = 0
     private var statsWarmup = true
@@ -282,12 +329,74 @@ class AusbcCameraController(
     }
 
     /** UVCCamera/USBMonitor handle attach/detach itself; nothing periodic needed. */
+    /**
+     * Runtime stream watchdog.
+     *
+     * The engine reports detach, but a bouncing OTG contact can wedge the isochronous pipe while
+     * the device stays enumerated: no frames, no detach, no error — the HUD freezes on the last
+     * picture. It can also miss the reconnect that follows a fast unplug/replug, because
+     * [openCamera] refuses while the previous teardown is still running. Both are handled here.
+     */
     fun startWatchdog() {
-        HudLogger.i(TAG, "startWatchdog (no-op: engine handles detach)")
+        stopWatchdog()
+        runtimeWatchdog = try {
+            controlExecutor.scheduleWithFixedDelay(
+                { watchdogTick() },
+                WATCHDOG_PERIOD_S,
+                WATCHDOG_PERIOD_S,
+                TimeUnit.SECONDS,
+            )
+        } catch (t: Throwable) {
+            HudLogger.w(TAG, "cannot start the stream watchdog: ${t.message}")
+            null
+        }
+        HudLogger.i(TAG, "stream watchdog started (every ${WATCHDOG_PERIOD_S}s)")
+    }
+
+    fun stopWatchdog() {
+        runtimeWatchdog?.cancel(false)
+        runtimeWatchdog = null
+        openRetry?.cancel(false)
+        openRetry = null
+    }
+
+    /** Runs on [controlExecutor]: recovers a stream that stopped delivering frames. */
+    private fun watchdogTick() {
+        if (camera == null) return
+        val last = lastFrameNs
+        if (last == 0L) return
+        val idleMs = (System.nanoTime() - last) / 1_000_000
+        if (idleMs < STALL_RECONNECT_MS) return
+
+        val now = System.currentTimeMillis()
+        if (now - lastRecoveryAtMs < RECONNECT_MIN_GAP_MS) return
+        lastRecoveryAtMs = now
+        recoveryAttempts++
+
+        HudLogger.w(
+            TAG,
+            "no frames for $idleMs ms while open — recovering the USB stream " +
+                "(attempt $recoveryAttempts)"
+        )
+        if (recoveryAttempts == 1) listener.onStatusChanged("USB camera stalled — reconnecting")
+        // A stall after a bump is almost always the pipe, not the device: reopen from scratch.
+        closeCamera()
+        scanAndConnect(forcePermission = false)
+    }
+
+    /** Clears the recovery budget once frames are flowing again. */
+    private fun onFramesFlowing() {
+        if (recoveryAttempts != 0) {
+            HudLogger.i(TAG, "stream recovered after $recoveryAttempts attempt(s)")
+            recoveryAttempts = 0
+        }
     }
 
     fun onAppBackgrounded() {
         HudLogger.i(TAG, "onAppBackgrounded - close camera")
+        // Also cancels a pending open-retry: reopening the camera from the background is exactly
+        // what the lifecycle is trying to prevent.
+        stopWatchdog()
         closeCamera()
     }
 
@@ -442,6 +551,14 @@ class AusbcCameraController(
     }
 
     /**
+     * The lane switch changes whether NV21 frames are needed at all: with detection and
+     * recording off, the callback is RAW and carries no pixels to analyse.
+     */
+    fun onLaneSettingChanged() {
+        camera?.let { configureFrameCallback(it) }
+    }
+
+    /**
      * Frames arrive on the native capture thread, so this must never block. Two shapes:
      *
      * - **RAW** (detection off): the engine hands us the *compressed* frame straight
@@ -458,6 +575,7 @@ class AusbcCameraController(
         val nowNs = System.nanoTime()
         val prevNs = lastFrameNs
         lastFrameNs = nowNs
+        if (recoveryAttempts != 0) onFramesFlowing()
         if (prevNs != 0L) {
             val deltaMs = (nowNs - prevNs) / 1_000_000f
             // exponential moving average keeps the readout readable
@@ -471,11 +589,20 @@ class AusbcCameraController(
         }
 
         val det = detector
-        if (det == null) {
+        val w = frameW
+        val h = frameH
+        val need = w * h * 3 / 2
+        if (need <= 0) return@IFrameCallback
+
+        val now = System.currentTimeMillis()
+        val lanesDue = lanes.isDue()
+        val detDue = det != null && detectEnabled &&
+            (detectIntervalMs <= 0 || now - lastInferAt >= detectIntervalMs) && !busy.get()
+        if (!detDue && !lanesDue) {
             // One-shot probe of what the RAW callback actually delivers. Measured result: it is
             // NOT the compressed frame — capacity is w*h*3/2 and the first bytes are YUV, so
             // RAW is a decode-and-convert, which is why it costs about as much as the preview.
-            if (!rawProbeLogged) {
+            if (det == null && !rawProbeLogged) {
                 rawProbeLogged = true
                 val head = ByteArray(4)
                 buffer.rewind()
@@ -488,39 +615,45 @@ class AusbcCameraController(
             }
             return@IFrameCallback
         }
-        val w = frameW
-        val h = frameH
-        val need = w * h * 3 / 2
-        if (need <= 0) return@IFrameCallback
-        val now = System.currentTimeMillis()
-        if (detectIntervalMs > 0 && now - lastInferAt < detectIntervalMs) return@IFrameCallback
-        if (!busy.compareAndSet(false, true)) return@IFrameCallback
-        lastInferAt = now
+
         try {
-            if (nv21.size != need) nv21 = ByteArray(need)
             buffer.rewind()
-            if (buffer.capacity() < need) {
-                busy.set(false)
-                return@IFrameCallback
+            if (buffer.capacity() < need) return@IFrameCallback
+            if (detDue) {
+                if (nv21.size != need) nv21 = ByteArray(need)
+                buffer.get(nv21, 0, need)
+                // [LaneAnalyzer.submit] copies out before it returns, so sharing `nv21` with the
+                // inference thread below is safe.
+                if (lanesDue) lanes.submit(nv21, w, h)
+                if (busy.compareAndSet(false, true)) {
+                    lastInferAt = now
+                    val snapshot = nv21
+                    inferExecutor.execute {
+                        val t0 = System.nanoTime()
+                        try {
+                            val detections = det?.detect(snapshot, w, h, confThreshold).orEmpty()
+                            listener.onDetections(detections)
+                        } catch (t: Throwable) {
+                            HudLogger.w(TAG, "detection pass failed: ${t.message}")
+                        } finally {
+                            inferMs = (System.nanoTime() - t0) / 1_000_000f
+                            busy.set(false)
+                        }
+                    }
+                }
+            } else {
+                // Lane pass only: the detector is not due, so leave `nv21` untouched for the
+                // inference that may still be reading it and hand lanes their own luma plane.
+                // `laneLuma` is written only while `lanes.isDue()`, which is false until the
+                // previous pass finishes, so the buffer can be handed over without a second copy.
+                val plane = w * h
+                if (laneLuma.size != plane) laneLuma = ByteArray(plane)
+                buffer.get(laneLuma, 0, plane)
+                lanes.submitOwned(laneLuma, w, h)
             }
-            buffer.get(nv21, 0, need)
         } catch (t: Throwable) {
             busy.set(false)
             HudLogger.w(TAG, "frame copy failed: ${t.message}")
-            return@IFrameCallback
-        }
-        val snapshot = nv21
-        inferExecutor.execute {
-            val t0 = System.nanoTime()
-            try {
-                val detections = detector?.detect(snapshot, w, h, confThreshold).orEmpty()
-                listener.onDetections(detections)
-            } catch (t: Throwable) {
-                HudLogger.w(TAG, "detection pass failed: ${t.message}")
-            } finally {
-                inferMs = (System.nanoTime() - t0) / 1_000_000f
-                busy.set(false)
-            }
         }
     }
 
@@ -754,6 +887,35 @@ class AusbcCameraController(
 
     // --------------------------------------------------------------- camera
 
+    /**
+     * Re-attempts an open that was refused because a teardown was still running. The control
+     * block is borrowed from the caller, so it is only closed here or by a successful open.
+     */
+    private fun scheduleOpenRetry(device: UsbDevice, ctrlBlock: USBMonitor.UsbControlBlock) {
+        openRetry?.cancel(false)
+        openRetry = try {
+            controlExecutor.schedule(
+                {
+                    openRetry = null
+                    try {
+                        openCamera(device, ctrlBlock)
+                    } catch (t: Throwable) {
+                        HudLogger.w(TAG, "open retry failed: ${t.message}")
+                    }
+                },
+                OPEN_RETRY_MS,
+                TimeUnit.MILLISECONDS,
+            )
+        } catch (t: Throwable) {
+            HudLogger.w(TAG, "cannot schedule the open retry: ${t.message}")
+            try {
+                ctrlBlock.close()
+            } catch (_: Throwable) {
+            }
+            null
+        }
+    }
+
     private fun openCamera(device: UsbDevice, ctrlBlock: USBMonitor.UsbControlBlock) {
         activeDevice = device
         val surface = outputSurface
@@ -767,9 +929,29 @@ class AusbcCameraController(
             return
         }
         if (openInFlight || camera != null) {
-            HudLogger.i(TAG, "openCamera: already open/in-flight")
+            // Dropping the attempt here is what left the camera dead after a bump: the attach
+            // arrives while closeCamera() is still unwinding, so this is the *only* connect
+            // signal we get. Re-try shortly instead of returning, and give up after a few tries
+            // so a genuinely busy session is not reopened underneath itself.
+            if (openRetries < OPEN_RETRY_ATTEMPTS) {
+                openRetries++
+                HudLogger.i(
+                    TAG,
+                    "openCamera: teardown still in flight — retrying in ${OPEN_RETRY_MS}ms " +
+                        "($openRetries/$OPEN_RETRY_ATTEMPTS)"
+                )
+                scheduleOpenRetry(device, ctrlBlock)
+            } else {
+                HudLogger.w(TAG, "openCamera: still busy after $openRetries retries — giving up")
+                openRetries = 0
+                try {
+                    ctrlBlock.close()
+                } catch (_: Throwable) {
+                }
+            }
             return
         }
+        openRetries = 0
         openInFlight = true
         fallbackAttempted = false
         totalFrames.set(0)
@@ -921,14 +1103,22 @@ class AusbcCameraController(
         streamWatchdog = null
     }
 
+    /**
+     * Drops the detector. The native session is released on the inference thread, behind any pass
+     * already queued: closing an ncnn session while `detect()` is reading it faults in native
+     * code, which is exactly what a model change used to do.
+     */
     private fun closeDetector() {
         detectorGen.incrementAndGet()
-        try {
-            detector?.close()
-        } catch (_: Throwable) {
-        }
+        val old = detector
         detector = null
         busy.set(false)
+        if (old == null) return
+        try {
+            inferExecutor.execute { runCatching { old.close() } }
+        } catch (t: Throwable) {
+            HudLogger.w(TAG, "could not queue detector close: ${t.message}")
+        }
     }
 
     /**
@@ -938,14 +1128,15 @@ class AusbcCameraController(
      * RAW callback is enough to drive the FPS readout, unless sampling is switched off entirely.
      */
     private fun configureFrameCallback(cam: UVCCamera) {
-        val needPixels = detectEnabled || (rec?.isRecording == true)
+        val needPixels = detectEnabled || (rec?.isRecording == true) || HudPrefs.laneDetect(context)
         try {
             when {
                 needPixels -> {
                     cam.setFrameCallback(frameCallback, UVCCamera.PIXEL_FORMAT_NV21)
                     HudLogger.i(
                         TAG,
-                        "frame callback: NV21 (detection=$detectEnabled recording=${rec?.isRecording == true})"
+                        "frame callback: NV21 (detection=$detectEnabled " +
+                            "recording=${rec?.isRecording == true} lanes=${HudPrefs.laneDetect(context)})"
                     )
                 }
                 HudPrefs.sampleFps(context) -> {
@@ -1033,19 +1224,24 @@ class AusbcCameraController(
                 }
                 return@execute
             }
+            val old = detector
             detector = built
+            try {
+                old?.close()
+            } catch (_: Throwable) {
+            }
             if (built == null) {
                 HudLogger.w(TAG, "detection requested but model unavailable — preview only")
                 return@execute
             }
-            // resolveAsset() falls back to a bundled model when the preference is stale, so
-            // write the name that really loaded — otherwise every launch repeats the warning.
-            if (OnnxDetector.activeAsset.isNotEmpty() && HudPrefs.modelAsset(ctx) != OnnxDetector.activeAsset) {
-                HudLogger.i(TAG, "model preference '$asset' -> '${OnnxDetector.activeAsset}'")
-                HudPrefs.setModelAsset(ctx, OnnxDetector.activeAsset)
-            }
+            // The preference is never rewritten from here. It used to be corrected to
+            // `OnnxDetector.activeAsset`, which is only populated when an ONNX session is built:
+            // with the ncnn backend winning (the normal case) that field still holds whatever was
+            // loaded earlier, so choosing a model was silently reverted to the previous one. The
+            // provider cache is keyed by the model that was *asked for*, which is also what the
+            // next launch will ask for.
             if (cached == null) {
-                val key = "${OnnxDetector.activeAsset}@${w}x$h"
+                val key = "$asset@${w}x$h"
                 val winner = DetectorFactory.activeBackend
                 HudPrefs.setDetectProviderFor(ctx, key, winner)
                 HudLogger.i(TAG, "remembered backend '$winner' for $key")
@@ -1103,5 +1299,13 @@ class AusbcCameraController(
         focusSupported = false
         autoFocusSupported = false
         lastFocus = FocusInfo(false, false, 0)
+    }
+
+    fun reloadDetector() {
+        val w = frameW
+        val h = frameH
+        if (w > 0 && h > 0) {
+            startDetectorAsync(context, w, h)
+        }
     }
 }

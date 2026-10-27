@@ -35,6 +35,9 @@ object HudPrefs {
     private const val KEY_ALERTS = "alerts_enabled"
     private const val KEY_SHOW_BATTERY = "show_battery"
     private const val KEY_DETECT_ZONE = "detect_zone_bottom_only"
+    private const val KEY_HUD_FLIP = "hud_windshield_flip"
+    private const val KEY_LANES = "lane_detect"
+    private const val KEY_LANE_INTERVAL = "lane_interval_ms"
 
     private fun sp(ctx: Context): SharedPreferences =
         ctx.getSharedPreferences(FILE, Context.MODE_PRIVATE)
@@ -59,6 +62,25 @@ object HudPrefs {
      * sky, signs and the far distance, which produced alerts the driver cannot act on.
      */
     fun detectZoneBottomOnly(ctx: Context) = sp(ctx).getBoolean(KEY_DETECT_ZONE, true)
+
+    /**
+     * Lane detection. Off by default: it is a second pass over every analysed frame, and the
+     * overlay is only worth its cost once the driver has the camera pointed down the road.
+     */
+    /**
+     * Mirror the HUD for a windshield reflection: the whole picture is flipped on screen, the
+     * recording stays normal. Deliberately separate from [mirror], which corrects a camera that
+     * is mounted backwards and therefore also flips the recorded frames.
+     */
+    fun hudFlip(ctx: Context) = sp(ctx).getBoolean(KEY_HUD_FLIP, false)
+
+    fun laneDetect(ctx: Context) = sp(ctx).getBoolean(KEY_LANES, false)
+
+    /**
+     * Minimum gap between lane passes. Lanes change far more slowly than objects move, so
+     * 400 ms (2.5 Hz) looks continuous on screen at a fraction of the cost of per-frame work.
+     */
+    fun laneIntervalMs(ctx: Context) = sp(ctx).getInt(KEY_LANE_INTERVAL, 400)
 
     /**
      * When true an extra RAW frame callback is registered to measure the camera frame rate.
@@ -174,6 +196,12 @@ object HudPrefs {
         sp(ctx).edit().putBoolean(KEY_SHOW_BATTERY, v).apply()
     fun setDetectZoneBottomOnly(ctx: Context, v: Boolean) =
         sp(ctx).edit().putBoolean(KEY_DETECT_ZONE, v).apply()
+    fun setHudFlip(ctx: Context, v: Boolean) =
+        sp(ctx).edit().putBoolean(KEY_HUD_FLIP, v).apply()
+    fun setLaneDetect(ctx: Context, v: Boolean) =
+        sp(ctx).edit().putBoolean(KEY_LANES, v).apply()
+    fun setLaneIntervalMs(ctx: Context, v: Int) =
+        sp(ctx).edit().putInt(KEY_LANE_INTERVAL, v).apply()
     fun setConfidence(ctx: Context, v: Float) = sp(ctx).edit().putFloat(KEY_CONF, v).apply()
     fun setModelAsset(ctx: Context, v: String) = sp(ctx).edit().putString(KEY_MODEL, v).apply()
 

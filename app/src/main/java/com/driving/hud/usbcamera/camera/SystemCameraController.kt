@@ -31,6 +31,13 @@ import java.util.concurrent.atomic.AtomicInteger
  * Camera controller for the built-in system camera (rear/front) using Android Camera2 API.
  * Provides live preview, resolution negotiation from device characteristics, NV21 conversion
  * for ONNX/ncnn detection, FPS telemetry, and dashcam recording.
+ *
+ * **Orientation.** The preview is a `SurfaceView` fed the *same* raw sensor buffer as the
+ * `ImageReader` — no `TextureView` transform, no `setDisplayOrientation`. That is deliberate:
+ * preview and analysis therefore share one orientation, so boxes and lane lines cannot drift from
+ * the picture. The trade-off is that the picture is not rotated for the display, so in portrait it
+ * appears sideways. The HUD is used in landscape, which is why that is acceptable; real portrait
+ * support would have to rotate both streams, not just the analysis one.
  */
 class SystemCameraController(
     private val context: Context,
@@ -41,6 +48,9 @@ class SystemCameraController(
         private const val TAG = "SystemCameraCtrl"
         private const val DEFAULT_WIDTH = 1280
         private const val DEFAULT_HEIGHT = 720
+
+        /** Detection passes to wait before writing the diagnostic dump. */
+        private const val DIAG_DUMP_AFTER_PASSES = 3
 
         /**
          * Selects the closest supported size from the camera's available sizes.
@@ -133,6 +143,25 @@ class SystemCameraController(
     private var frameH = DEFAULT_HEIGHT
 
     private var nv21Buffer = ByteArray(0)
+
+    /** One-shot geometry dump per session; see [logFrameGeometry]. */
+    private var frameGeometryLogged = false
+
+    /** The line [logGeometry] produced, embedded in the on-device diagnostic dump. */
+    private var geometryLine: String = ""
+
+    /**
+     * Diagnostic: dump the analysis frame and its boxes to `files/diag/` so a mismatch can be
+     * *seen* instead of inferred. Armed for the third detection pass of a session, which is late
+     * enough for the detector to be built and early enough to be during a normal drive.
+     */
+    @Volatile
+    var diagDumpArmed: Boolean = true
+
+    private var diagDumps = 0
+
+    /** Lane passes run on their own thread; see [LaneAnalyzer]. */
+    private val lanes = LaneAnalyzer(context, listener, TAG)
 
     /** Written on the inference thread and read on the camera handler: must stay volatile. */
     @Volatile
@@ -253,6 +282,7 @@ class SystemCameraController(
 
             val chars = cameraManager.getCameraCharacteristics(cameraIdToOpen)
             characteristics = chars
+            logGeometry(chars)
             val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
 
             // Pick a size that BOTH streams can produce. The preview (SurfaceHolder) and the
@@ -478,6 +508,11 @@ class SystemCameraController(
             null
         } ?: return
 
+        if (!frameGeometryLogged) {
+            frameGeometryLogged = true
+            logFrameGeometry(image)
+        }
+
         val nowNs = System.nanoTime()
         val prevNs = lastFrameNs
         lastFrameNs = nowNs
@@ -509,8 +544,9 @@ class SystemCameraController(
 
         // The YUV_420_888 -> NV21 copy is the most expensive thing in this callback (a full
         // frame of per-pixel work) and it happens on a camera handler thread, so doing it for
-        // every frame starves the ImageReader queue and makes the preview judder. Only the two
-        // consumers of pixels can justify it: the recorder, and a detection pass that is due.
+        // every frame starves the ImageReader queue and makes the preview judder. Only the
+        // consumers of pixels can justify it: the recorder, a detection pass that is due, and a
+        // lane pass that is due.
         val recorder = rec
         val isRecActive = recorder?.isRecording == true
         val det = detector
@@ -518,9 +554,10 @@ class SystemCameraController(
         val isDetDue = det != null && HudPrefs.detect(context) &&
             (detectIntervalMs <= 0 || now - lastInferAt >= detectIntervalMs) &&
             !busy.get()
+        val lanesDue = lanes.isDue()
 
         try {
-            if (!isRecActive && !isDetDue) return
+            if (!isRecActive && !isDetDue && !lanesDue) return
 
             val need = frameW * frameH * 3 / 2
             if (nv21Buffer.size != need) {
@@ -534,6 +571,10 @@ class SystemCameraController(
                 recorder.submit(byteBuf, need)
             }
 
+            // Lane detection copies the luma out synchronously, so sharing the buffer with the
+            // inference pass below is safe.
+            if (lanesDue) lanes.submit(nv21Buffer, frameW, frameH)
+
             // Object detection
             if (isDetDue && det != null && busy.compareAndSet(false, true)) {
                 lastInferAt = now
@@ -546,6 +587,7 @@ class SystemCameraController(
                         val t0 = System.nanoTime()
                         val dets = det.detect(copy, w, h, conf)
                         lastInferMs = (System.nanoTime() - t0) / 1_000_000f
+                        maybeDump(copy, w, h, dets)
                         listener.onDetections(dets)
                     } catch (t: Throwable) {
                         HudLogger.w(TAG, "Inference error: ${t.message}")
@@ -557,6 +599,71 @@ class SystemCameraController(
         } finally {
             image.close()
         }
+    }
+
+    /**
+     * One-shot dump of the numbers that decide whether a bounding box can land in the right place:
+     * what the sensor says its orientation is, what the display is rotated to, the size handed to
+     * the preview surface, and the size the analysis buffer really has. A mismatch between any two
+     * of them is the difference between "boxes are wrong" and "boxes are fine".
+     */
+    private fun logGeometry(chars: CameraCharacteristics) {
+        val sensor = chars.get(CameraCharacteristics.SENSOR_ORIENTATION)
+        val facing = when (chars.get(CameraCharacteristics.LENS_FACING)) {
+            CameraCharacteristics.LENS_FACING_FRONT -> "front"
+            CameraCharacteristics.LENS_FACING_BACK -> "back"
+            else -> "external"
+        }
+        val rotation = displayRotationDegrees()
+        geometryLine = "facing=$facing sensorOrientation=$sensor displayRotation=$rotation " +
+            "=> analysis needs ${((sensor ?: 0) - rotation + 360) % 360}deg " +
+            "| requested ${frameW}x$frameH | preview surface ${outputSurfaceSize()}"
+        HudLogger.i(TAG, "camera geometry: $geometryLine")
+    }
+
+    private fun outputSurfaceSize(): String {
+        val holder = outputHolder ?: return "n/a"
+        return try {
+            val f = holder.surfaceFrame
+            "${f.width()}x${f.height()}"
+        } catch (t: Throwable) {
+            "n/a"
+        }
+    }
+
+    private fun displayRotationDegrees(): Int = try {
+        val wm = context.getSystemService(Context.WINDOW_SERVICE) as? android.view.WindowManager
+        when (wm?.defaultDisplay?.rotation) {
+            android.view.Surface.ROTATION_90 -> 90
+            android.view.Surface.ROTATION_180 -> 180
+            android.view.Surface.ROTATION_270 -> 270
+            else -> 0
+        }
+    } catch (t: Throwable) {
+        0
+    }
+
+    /** Writes one analysis frame plus its boxes, once per session, when [diagDumpArmed]. */
+    private fun maybeDump(nv21: ByteArray, w: Int, h: Int, dets: List<Detection>) {
+        if (!diagDumpArmed) return
+        diagDumps++
+        if (diagDumps < DIAG_DUMP_AFTER_PASSES) return
+        diagDumpArmed = false
+        Camera2Diag.dump(context, nv21, w, h, dets, geometryLine)
+    }
+
+    private fun logFrameGeometry(image: Image) {
+        val y = image.planes[0]
+        val u = image.planes[1]
+        val v = image.planes[2]
+        HudLogger.i(
+            TAG,
+            "analysis image: ${image.width}x${image.height} crop=${image.cropRect} " +
+                "Y[rowStride=${y.rowStride} pixelStride=${y.pixelStride} limit=${y.buffer.limit()}] " +
+                "U[rowStride=${u.rowStride} pixelStride=${u.pixelStride}] " +
+                "V[rowStride=${v.rowStride} pixelStride=${v.pixelStride}] " +
+                "| decoder expects ${frameW}x$frameH"
+        )
     }
 
     /** Converts android.media.Image (YUV_420_888) to NV21 format safely with bounds validation. */
@@ -719,6 +826,10 @@ class SystemCameraController(
 
     fun close() {
         isOpen = false
+        // Log the geometry again for the next session: the lens or the device rotation may differ.
+        frameGeometryLogged = false
+        diagDumps = 0
+        diagDumpArmed = true
         // Invalidate any session still being configured, so its callback is discarded.
         sessionGen++
         val session = captureSession
@@ -750,15 +861,37 @@ class SystemCameraController(
 
     fun destroy() {
         close()
-        // Invalidate an in-flight detector build so it cannot outlive the camera.
-        detectorGen.incrementAndGet()
-        try {
-            detector?.close()
-        } catch (_: Throwable) {}
-        detector = null
+        // Queued behind the last pass; `shutdown()` below still drains the queue.
+        closeDetectorLater()
         cameraThread?.quitSafely()
         cameraThread = null
         cameraHandler = null
         inferExecutor.shutdown()
+        lanes.destroy()
+    }
+
+    /**
+     * Swaps in a different model without reopening the camera.
+     *
+     * The old session is closed **on the inference thread**, behind whatever pass is already
+     * running: freeing an ncnn session while `detect()` reads it faults inside native code, and
+     * this is reachable from the Settings screen on every model change.
+     */
+    fun reloadDetector() {
+        closeDetectorLater()
+        initDetector()
+    }
+
+    /** Drops the current session, releasing it on the inference thread (see [reloadDetector]). */
+    private fun closeDetectorLater() {
+        val old = detector
+        detector = null
+        detectorGen.incrementAndGet()
+        if (old == null) return
+        try {
+            inferExecutor.execute { runCatching { old.close() } }
+        } catch (t: Throwable) {
+            HudLogger.w(TAG, "could not queue detector close: ${t.message}")
+        }
     }
 }

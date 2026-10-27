@@ -3,6 +3,9 @@ package com.driving.hud.usbcamera
 import com.driving.hud.usbcamera.alert.ClosingRateFilter
 import com.driving.hud.usbcamera.calib.GroundPlaneCalibration
 import com.driving.hud.usbcamera.camera.DvrFrameParser
+import com.driving.hud.usbcamera.detect.LaneDetector
+import com.driving.hud.usbcamera.detect.NanoDetHead
+import com.driving.hud.usbcamera.detect.OnnxDetector
 import com.driving.hud.usbcamera.record.H264AnnexB
 import com.driving.hud.usbcamera.ui.VideoFit
 import com.driving.hud.usbcamera.util.ProviderMemory
@@ -611,5 +614,213 @@ class HudUnitTests {
         assertEquals(ProviderMemory.MAX_ENTRIES, bounded.split('\n').size)
         assertEquals("", ProviderMemory.lookup(bounded, "model1@1280x720"))
         assertEquals("provider9", ProviderMemory.lookup(bounded, "model9@1280x720"))
+    }
+
+    // ------------------------------------------------------------------ lanes
+
+    private companion object {
+        const val LANE_W = 1280
+        const val LANE_H = 720
+
+        /** Paints a synthetic NV21 road: dark asphalt with two converging white markings. */
+        fun roadFrame(leftBottom: Int, rightBottom: Int, convergence: Float = 0.45f): ByteArray {
+            val frame = ByteArray(LANE_W * LANE_H * 3 / 2)
+            java.util.Arrays.fill(frame, 60)              // asphalt
+            java.util.Arrays.fill(frame, LANE_W * LANE_H, frame.size, 128.toByte()) // neutral chroma
+            val bottom = LANE_H - 1
+            val top = (LANE_H * 0.55f).toInt()
+            for (y in top..bottom) {
+                val dx = ((bottom - y) * convergence).toInt()
+                drawMark(frame, leftBottom + dx, y)
+                drawMark(frame, rightBottom - dx, y)
+            }
+            return frame
+        }
+
+        fun drawMark(frame: ByteArray, cx: Int, y: Int, halfWidth: Int = 4) {
+            for (x in (cx - halfWidth)..(cx + halfWidth)) {
+                if (x in 0 until LANE_W) frame[y * LANE_W + x] = 235.toByte()
+            }
+        }
+    }
+
+    @Test
+    fun testLaneDetectorFindsCentredLane() {
+        val detector = LaneDetector()
+        val result = detector.detect(roadFrame(leftBottom = 420, rightBottom = 860), LANE_W, LANE_H)
+
+        assertTrue("left edge should be found", result.left.size >= 2)
+        assertTrue("right edge should be found", result.right.size >= 2)
+        // 440 px of lane on a 1280 px frame.
+        assertEquals(440f / LANE_W, result.laneWidth, 0.05f)
+        assertEquals("camera is centred in its lane", 0f, result.offsetLanes, 0.06f)
+        assertTrue("a centred lane is not a departure", !result.departure)
+        assertTrue("confidence should be high", result.confidence > 0.5f)
+    }
+
+    @Test
+    fun testLaneDetectorReportsOffsetSign() {
+        val detector = LaneDetector()
+        // Same lane, 120 px to the right: the lane centre is now right of the camera axis.
+        val result = detector.detect(roadFrame(leftBottom = 540, rightBottom = 980), LANE_W, LANE_H)
+        assertEquals(120f / 440f, result.offsetLanes, 0.08f)
+        assertTrue("drift is not yet a departure at 0.27 lanes", !result.departure)
+    }
+
+    @Test
+    fun testLaneDetectorRaisesDepartureAfterTwoPasses() {
+        val detector = LaneDetector()
+        // 210 px on a 440 px lane is 0.48 lane widths: past the 0.45 threshold, but the warning
+        // is deliberately held for a second pass so one noisy frame cannot fire it.
+        val frame = roadFrame(leftBottom = 630, rightBottom = 1070)
+        val first = detector.detect(frame, LANE_W, LANE_H)
+        assertTrue("first pass past the threshold should not warn", !first.departure)
+        val second = detector.detect(frame, LANE_W, LANE_H)
+        assertTrue("second pass should warn", second.departure)
+        assertTrue("offset should be positive when the lane is right of centre", second.offsetLanes > 0.4f)
+    }
+
+    @Test
+    fun testLaneDetectorIgnoresFlatFrame() {
+        val flat = ByteArray(LANE_W * LANE_H * 3 / 2)
+        java.util.Arrays.fill(flat, 70)
+        val result = LaneDetector().detect(flat, LANE_W, LANE_H)
+        assertTrue("a featureless frame has no lanes", result.isEmpty)
+        assertTrue(result.offsetLanes.isNaN())
+    }
+
+    @Test
+    fun testLaneDetectorRejectsShortBuffer() {
+        val result = LaneDetector().detect(ByteArray(16), LANE_W, LANE_H)
+        assertTrue(result.isEmpty)
+    }
+
+    // ------------------------------------------------------------- nanodet head
+
+    /**
+     * Builds one NanoDet row: 80 class scores, then 32 regression logits (4 sides × 8 bins).
+     * A large logit in one bin makes the softmax pick that bin, so the decoded distance is
+     * `bin × stride` — which is exactly what the assertions below rely on.
+     */
+    private fun nanoDetRow(
+        cls: Int,
+        score: Float,
+        bins: IntArray,
+        classes: Int = 80,
+    ): FloatArray {
+        // The layout of the published graph, which is what the decoder must match: 80 class
+        // scores first, then 4 sides x 8 distribution bins.
+        val row = FloatArray(classes + 4 * 8)
+        if (cls >= 0) row[cls] = score
+        for (side in 0 until 4) {
+            row[classes + side * 8 + bins[side]] = 12f
+        }
+        return row
+    }
+
+    @Test
+    fun testNanoDetHeadDecodesAnchorGeometry() {
+        val labels = Array(80) { "c$it" }.also { it[2] = "car" }
+        val head = NanoDetHead(labels, inputSize = 320, labelTag = "test")
+
+        // 2125 anchors = 40² + 20² + 10² + 5². Put one detection on the first level (stride 8)
+        // at grid cell (gx=10, gy=5): anchor index = gy·40 + gx.
+        val rows = Array(2125) { FloatArray(112) }
+        rows[5 * 40 + 10] = nanoDetRow(cls = 2, score = 0.9f, bins = intArrayOf(2, 1, 1, 1))
+
+        val dets = head.decode(rows, 2125, 112, conf = 0.3f, srcW = 1280, srcH = 720,
+            scaleX = 1f, scaleY = 1f, dx = 0f, dy = 0f)
+
+        assertEquals(1, dets.size)
+        val d = dets[0]
+        assertEquals("car", d.label)
+        assertEquals(0.9f, d.score, 1e-4f)
+        // Centre (10.5·8, 5.5·8) = (84, 44); distances left 2·8, up 1·8, right 1·8, down 1·8.
+        assertEquals((84f - 16f) / 320f, d.left, 1e-3f)
+        assertEquals((44f - 8f) / 320f, d.top, 1e-3f)
+        assertEquals((84f + 8f) / 320f, d.right, 1e-3f)
+        assertEquals((44f + 8f) / 320f, d.bottom, 1e-3f)
+    }
+
+    @Test
+    fun testNanoDetHeadThresholdsAndRejectsWrongWidth() {
+        val labels = Array(80) { "c$it" }
+        val head = NanoDetHead(labels, inputSize = 320, labelTag = "test")
+        val rows = Array(2125) { FloatArray(112) }
+        rows[0] = nanoDetRow(cls = 7, score = 0.20f, bins = intArrayOf(1, 1, 1, 1))
+        // Below the threshold: nothing survives, and the decoder must not invent a box.
+        assertTrue(head.decode(rows, 2125, 112, 0.5f, 1280, 720, 1f, 1f, 0f, 0f).isEmpty())
+        // Above it: kept.
+        assertEquals(1, head.decode(rows, 2125, 112, 0.1f, 1280, 720, 1f, 1f, 0f, 0f).size)
+        // A YOLO head (84 channels) must be rejected rather than misread as NanoDet.
+        val yoloRows = Array(1344) { FloatArray(84) }
+        assertTrue(head.decode(yoloRows, 1344, 84, 0.1f, 1280, 720, 1f, 1f, 0f, 0f).isEmpty())
+    }
+
+    @Test
+    fun testNanoDetHeadAppliesClassAwareNms() {
+        val labels = Array(80) { "c$it" }
+        val head = NanoDetHead(labels, inputSize = 320, labelTag = "test")
+        val rows = Array(2125) { FloatArray(112) }
+        // Two anchors one cell apart: IoU is high enough to merge them.
+        rows[5 * 40 + 10] = nanoDetRow(cls = 2, score = 0.9f, bins = intArrayOf(3, 3, 3, 3))
+        rows[5 * 40 + 11] = nanoDetRow(cls = 2, score = 0.8f, bins = intArrayOf(3, 3, 3, 3))
+        val merged = head.decode(rows, 2125, 112, 0.3f, 1280, 720, 1f, 1f, 0f, 0f)
+        assertEquals("overlapping boxes of one class are merged", 1, merged.size)
+        assertEquals(0.9f, merged[0].score, 1e-4f)
+    }
+
+    // ------------------------------------------------------------ model assets
+
+    @Test
+    fun testChooseAssetNeverSubstitutesANamedModel() {
+        val bundled = listOf("test_pattern.onnx", "yolov10n-224.onnx", "yolov10n-320.onnx")
+
+        // Present: use exactly what was asked for.
+        assertEquals(
+            "yolov10n-320.onnx",
+            OnnxDetector.chooseAsset("yolov10n-320.onnx", exists = true, available = bundled),
+        )
+
+        // Absent and explicitly named: refuse. The decoder and the pre-processing are chosen from
+        // the name, so substituting yolo26n (ncnn-only, no .onnx in the APK) with a YOLOv10 graph
+        // would feed the wrong family to the wrong decoder and report zero boxes.
+        assertNull(OnnxDetector.chooseAsset("yolo26n-256.onnx", exists = false, available = bundled))
+        assertNull(OnnxDetector.chooseAsset("nanodet-plus-m-320.onnx", exists = false, available = bundled))
+
+        // No preference at all (fresh install): any real model beats no model, but not the
+        // synthetic plumbing test pattern while a real one exists.
+        assertEquals(
+            "yolov10n-224.onnx",
+            OnnxDetector.chooseAsset("", exists = false, available = bundled),
+        )
+        assertEquals(
+            "test_pattern.onnx",
+            OnnxDetector.chooseAsset("", exists = false, available = listOf("test_pattern.onnx")),
+        )
+        assertNull(OnnxDetector.chooseAsset("", exists = false, available = emptyList()))
+    }
+
+    /**
+     * The decoder must read the head the way the graph writes it. Building the row in the
+     * *inverted* order has to yield nothing, otherwise a future refactor could silently swap the
+     * two halves again — which is exactly what happened once, with the unit tests agreeing with
+     * the bug because the test helper had been written from the implementation instead of the
+     * model.
+     */
+    @Test
+    fun testNanoDetHeadRejectsInvertedRowLayout() {
+        val labels = Array(80) { "c$it" }.also { it[2] = "car" }
+        val head = NanoDetHead(labels, inputSize = 320, labelTag = "test")
+        val rows = Array(2125) { FloatArray(112) }
+        // Regressions first (0..31), classes second (32..111): the layout the old code assumed.
+        val inverted = FloatArray(112)
+        inverted[32 + 2] = 0.9f
+        for (side in 0 until 4) inverted[side * 8 + 2] = 12f
+        rows[5 * 40 + 10] = inverted
+
+        val dets = head.decode(rows, 2125, 112, conf = 0.3f, srcW = 1280, srcH = 720,
+            scaleX = 1f, scaleY = 1f, dx = 0f, dy = 0f)
+        assertTrue("an inverted row must not decode into a 'car' box", dets.none { it.label == "car" })
     }
 }

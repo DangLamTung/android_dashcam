@@ -15,7 +15,7 @@
     <string name="status_ready">Camera ready — tap START HUD</string>
     <!-- %1$dx%2$d = requested size, %3$dx%4$d = size actually used -->
     <string name="status_resolution_fallback">Camera would not start %1$dx%2$d — using %3$dx%4$d</string>
-    <string name="btn_mirror_hud">HUD Windshield Flip</string>
+    <string name="btn_mirror_hud">MIRROR</string>
     <string name="btn_reconnect">Retry Connect</string>
     <string name="btn_log">Log</string>
     <string name="home_subtitle">USB / UVC camera over OTG</string>
@@ -37,6 +37,16 @@
     <string name="btn_alerts_off">🔕 MUTED</string>
     <string name="btn_detect_on">DETECT: ON</string>
     <string name="btn_detect_off">DETECT: OFF</string>
+    <string name="btn_lanes_on">LANES: ON</string>
+    <string name="btn_lanes_off">LANES: OFF</string>
+    <string name="settings_lanes">Lane detection (offset + departure warning)</string>
+    <string name="settings_model">Detection model</string>
+    <string name="settings_model_v10n_224">YOLOv10n @224 — 2.3M params, lowest CPU</string>
+    <string name="settings_model_v10n_320">YOLOv10n @320 — 2.3M params, more range</string>
+    <string name="settings_model_yolo26n_256">YOLO26n @256 — 2.4M params, +2.4 mAP, NMS-free</string>
+    <string name="settings_model_nanodet_320">NanoDet-Plus-m @320 — 1.2M params, lightest</string>
+    <string name="settings_model_bundled_hint">Bundled models ship ncnn graphs, so they run on the GPU. Use the field below only for a model you added yourself.</string>
+    <string name="settings_model_custom_hint">Custom model asset (e.g. my-model.onnx)</string>
     <string name="settings_show_battery">Show battery level in the HUD</string>
     <string name="settings_detect_zone">Detect only in the lower two thirds</string>
     <string name="btn_grid">Grid / Guideline</string>
@@ -49,7 +59,8 @@
     <string name="settings_title">Settings</string>
     <string name="settings_grid">Show guide grid / lines</string>
     <string name="settings_night">Night mode (green tint)</string>
-    <string name="settings_mirror">Windshield flip (mirror)</string>
+    <string name="settings_mirror">Mirror the camera picture (camera mounted backwards)</string>
+    <string name="settings_hud_flip">Windshield flip (mirror the screen only, recording stays normal)</string>
     <string name="settings_resolution">Preview resolution</string>
     <string name="settings_res_360">360p (640x360) — lowest CPU (25% of 720p pixels)</string>
     <string name="settings_res_480">480p (800x480) — light</string>

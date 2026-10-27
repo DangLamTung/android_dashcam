@@ -38,7 +38,19 @@ object DetectorFactory {
      * Input layer shape-free, so the shape cannot be read from the graph and must be declared
      * here; it has to match the ONNX export this was converted from.
      */
-    private data class NcnnVariant(val input: Int, val param: String, val bin: String)
+    private data class NcnnVariant(
+        val input: Int,
+        val param: String,
+        val bin: String,
+        /** True for a NanoDet head, which needs its own decoder and pre-processing. */
+        val nanoDet: Boolean = false,
+        /**
+         * False when the model ships **only** an ncnn graph. The ONNX candidate is then skipped:
+         * there is no `.onnx` to open, and offering the backend anyway would log a "not bundled"
+         * warning on every start.
+         */
+        val hasOnnx: Boolean = true,
+    )
 
     /**
      * The only assets that have an ncnn graph, keyed by asset file name.
@@ -53,7 +65,29 @@ object DetectorFactory {
         "yolov10n-224.onnx" to
             NcnnVariant(224, NcnnDetector.PARAM_ASSET_224, NcnnDetector.BIN_ASSET_224),
         "yolov10n-320.onnx" to
-            NcnnVariant(320, NcnnDetector.PARAM_ASSET_320, NcnnDetector.BIN_ASSET_320)
+            NcnnVariant(320, NcnnDetector.PARAM_ASSET_320, NcnnDetector.BIN_ASSET_320),
+        // YOLO26n at 256: same nano scale as v10n, 2.4 mAP higher on COCO and a lighter head
+        // (DFL removed). 256 rather than 224 because at 224 a pedestrian 35 m out is 2-3 px.
+        //
+        // The two entries below are **ncnn only**: shipping the matching .onnx as well cost
+        // 14.6 MB of APK for a fallback that never won the shoot-out on this hardware. The key
+        // is a stable preference id, not a file name — which is why it still ends in ".onnx".
+        "yolo26n-256.onnx" to
+            NcnnVariant(
+                256,
+                NcnnDetector.PARAM_ASSET_YOLO26_256,
+                NcnnDetector.BIN_ASSET_YOLO26_256,
+                hasOnnx = false,
+            ),
+        // NanoDet-Plus-m: 1.2 M params, the lightest thing that still reads a road scene.
+        "nanodet-plus-m-320.onnx" to
+            NcnnVariant(
+                320,
+                NcnnDetector.PARAM_ASSET_NANODET_320,
+                NcnnDetector.BIN_ASSET_NANODET_320,
+                nanoDet = true,
+                hasOnnx = false,
+            ),
     )
 
     /** Backend the live session runs on, for the HUD. */
@@ -118,7 +152,13 @@ object DetectorFactory {
             // Vulkan session wins the shoot-out anyway, so nothing is lost here.
             attempts += NCNN_CPU_F32 to NCNN_CPU_F32
         }
-        attempts += ORT_AUTO to ""
+        // Only offer ONNX Runtime when there is a graph for it to open.
+        val hasOnnx = ncnnVariant?.hasOnnx ?: true
+        if (hasOnnx) {
+            attempts += ORT_AUTO to ""
+        } else {
+            HudLogger.i(TAG, "'$modelAsset' ships an ncnn graph only — ONNX Runtime skipped")
+        }
 
         val report = StringBuilder()
         var bestName = "?"
@@ -220,14 +260,18 @@ object DetectorFactory {
         validate: Boolean
     ): Detector? {
         val ncnnSpec = spec == NCNN_VULKAN || spec == NCNN_CPU || spec == NCNN_CPU_F32
+        // A remembered ONNX Runtime provider is meaningless for a graph that ships ncnn only.
+        if (!ncnnSpec && ncnnVariant?.hasOnnx == false) return null
         // A remembered ncnn backend must not be honoured for an asset that has no ncnn graph.
         if (ncnnSpec && ncnnVariant == null) return null
+        val nanoDet = ncnnVariant?.nanoDet == true || modelAsset.startsWith("nanodet")
         val d = when {
             spec == NCNN_VULKAN ->
                 NcnnDetector.create(
                     context, ncnnVariant!!.input, ncnnVariant.input, labels,
                     vulkan = true,
-                    paramAsset = ncnnVariant.param, binAsset = ncnnVariant.bin
+                    paramAsset = ncnnVariant.param, binAsset = ncnnVariant.bin,
+                    nanoDet = nanoDet,
                 )
             // CPU ncnn runs fp32 only. fp16 storage was measured *slower* than fp32 on these
             // ARMv8.0 cores (75 ms vs 73 ms) because there is no fp16 SIMD to use, so it has no
@@ -237,11 +281,12 @@ object DetectorFactory {
                 NcnnDetector.create(
                     context, ncnnVariant!!.input, ncnnVariant.input, labels,
                     vulkan = false, fp16 = false,
-                    paramAsset = ncnnVariant.param, binAsset = ncnnVariant.bin
+                    paramAsset = ncnnVariant.param, binAsset = ncnnVariant.bin,
+                    nanoDet = nanoDet,
                 )
             else ->
                 // "" means "let ONNX Runtime choose"; otherwise it is a provider name.
-                OnnxDetector.create(context, modelAsset, w, h, spec.ifEmpty { null })
+                OnnxDetector.create(context, modelAsset, w, h, spec.ifEmpty { null }, nanoDet = nanoDet)
         } ?: return null
         if (validate) d.detect(probe, w, h, 0.99f)
         return d

@@ -190,7 +190,20 @@ class CameraCoordinator(
 
     fun setMirror(mirror: Boolean) {
         usbController.setMirror(mirror)
+        // The JPEG sources flip the decoded frame instead of the SurfaceView, so their recording
+        // gets the corrected orientation too.
+        wifiController.setMirror(mirror)
+        dvrController.setMirror(mirror)
     }
+
+    /** The lane switch decides whether the UVC source needs NV21 frames at all. */
+    fun onLaneSettingChanged() {
+        usbController.onLaneSettingChanged()
+    }
+
+    /** True when the active source mirrors frames itself rather than via the SurfaceView. */
+    fun mirrorsInFrames(): Boolean =
+        currentMode == HudPrefs.MODE_WIFI || currentMode == HudPrefs.MODE_DVR
 
     /** True when the active source is the phone's own rear lens. */
     fun isSystemBackCamera(): Boolean =
@@ -253,6 +266,15 @@ class CameraCoordinator(
 
     fun describeUsbDevices(): String {
         return usbController.describeUsbDevices()
+    }
+
+    fun reloadDetector() {
+        when (currentMode) {
+            HudPrefs.MODE_USB -> usbController.reloadDetector()
+            HudPrefs.MODE_SYSTEM -> systemController.reloadDetector()
+            HudPrefs.MODE_WIFI -> wifiController.reloadDetector()
+            HudPrefs.MODE_DVR -> dvrController.reloadDetector()
+        }
     }
 
     fun destroy() {

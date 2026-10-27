@@ -19,6 +19,7 @@ A high-performance, fault-tolerant Android application and Heads-Up Display (HUD
 
 ### 1. 🧠 On-Device AI Detection & Distance Estimation
 - **YOLOv10n Neural Network**: Real-time object detection for vehicles (`car`, `truck`, `bus`, `motorcycle`) and pedestrians.
+- **Three bundled detectors, switchable in Settings**: **YOLO26n @256** (2.4 M params, 40.9 COCO mAP, NMS-free head — the accuracy/weight sweet spot), **NanoDet-Plus-m @320** (1.2 M params, Apache-2.0 — the lightest thing that still reads a road scene) and the original **YOLOv10n @224/@320**. All three ship an **ncnn graph**, so all three run on the Adreno GPU through Vulkan; the YOLOv10n pair also keeps its `.onnx` as an ONNX Runtime fallback, while the two newer models are ncnn-only (14.6 MB of APK for a fallback that never won the shoot-out). A per-model decoder and pre-processing are used where the head layout differs — NanoDet emits a 4×8 distribution per anchor instead of 4 box values, on a stretched BGR input rather than a letterbox.
 - **NCNN Acceleration Engine**: Highly optimized native ARM64 NEON and Vulkan compute pipeline (`libncnn.so`) yielding ultra-low inference latency (~15–25ms on modern Android chipsets).
 - **Dual Inference Backends**:
   - **NCNN** (Default): `yolov10n_224.ncnn` (224×224) and `yolov10n_320.ncnn` (320×320).
@@ -48,11 +49,26 @@ A high-performance, fault-tolerant Android application and Heads-Up Display (HUD
 - **Synchronized Subtitles (.SRT)**: Generates a matching `.srt` subtitle file alongside every recording, providing frame-by-frame telemetry and detection logs in standard media players (VLC, MX Player, etc.).
 
 ### 4. 🚘 Driving HUD Display
-- **Windshield Mirror Mode**: 1-tap horizontal flip so the screen reflects legibly when placed on a dashboard reflecting onto the windshield.
-- **Picture-in-Picture (PiP) & Split Screen**: Run navigation apps (Google Maps, Waze) in split-screen or float the HUD as a PiP window while keeping detection and collision alerts active.
+- **Windshield Mirror Mode**: 1-tap horizontal flip so the screen reflects legibly when placed on a dashboard reflecting onto the windshield. On the DVR and WiFi sources the flip is applied to the decoded frame, so the preview, the detection boxes and the saved recording all show the same (corrected) image.
+- **Lane Detection (no model, no extra APK weight)**: Sobel-X on a downsampled luma plane, an adaptive percentile threshold and a sliding-window fit per edge — the two lane polylines, a live offset readout (`LANE +0.12`) and a `LANE DEPARTURE` banner once the car is more than 0.45 lane widths off centre. Runs ~0.2–1.5 ms per pass at 2.5 Hz on its own thread, so it costs about 1% of a core and does not delay detection. Switchable with the **LANES** button in the HUD or in Settings.
+- **Picture-in-Picture (PiP) & Split Screen**: Run navigation apps (Google Maps, Waze) in split-screen or float the HUD as a PiP window while keeping detection and collision alerts active. The warning tones take no audio focus, so they play alongside the navigation voice instead of interrupting it.
 - **Live Battery & Thermal Telemetry**: Real-time battery drain rate (%/hr), temperature, and FPS monitoring with 5-second EMA low-pass filtering.
 
 ---
+
+## 🧠 Detection models
+
+Bundled in `app/src/main/assets/`, pick one in **Settings → Detection model** (a reconnect applies it):
+
+| Model | Params | COCO mAP@640 | Input | Graphs | Why |
+|---|---|---|---|---|---|
+| YOLOv10n | 2.3 M | 38.5 | 224 / 320 | ncnn + ONNX | Original default; 224 is the cheapest thing here |
+| **YOLO26n** | **2.4 M** | **40.9** | **256** | **ncnn only** | +2.4 mAP over v10n with 18% fewer FLOPs, no DFL, NMS-free |
+| NanoDet-Plus-m | **1.2 M** | ~30 | 320 | **ncnn only** | Half the parameters; Apache-2.0 instead of AGPL |
+
+Every model is timed against the others on first use and the winner is remembered per model +
+input size (see `DetectorFactory`). A model that ships ncnn only skips the ONNX Runtime candidate
+entirely. Regenerate the assets with `tools/export_detection_models.sh`.
 
 ## 🔌 Cameras & Devices We Tested
 
@@ -111,6 +127,7 @@ android-dashcam/
 │       │   │   ├── SystemCameraController.kt
 │       │   │   ├── WifiCameraController.kt
 │       │   │   ├── MjpegFrameSink.kt      # Shared JPEG → NV21 → detect/record pipeline
+│       │   │   ├── LaneAnalyzer.kt        # Throttled, off-thread lane pass per source
 │       │   │   ├── DvrUsbCameraController.kt # U2 DVR as a live camera source
 │       │   │   ├── DvrBot.kt              # SCSI Bulk-Only Transport (CBW/CSW)
 │       │   │   ├── DvrFrameParser.kt      # DVR video-slot / JPEG frame parsing
@@ -119,7 +136,11 @@ android-dashcam/
 │       │   ├── detect/                    # YOLOv10n inference engines
 │       │   │   ├── NcnnDetector.kt        # JNI NCNN high-speed inference
 │       │   │   ├── OnnxDetector.kt        # ONNX Runtime fallback
-│       │   │   └── DetectorFactory.kt
+│       │   │   ├── DetectorFactory.kt
+│       │   │   ├── NanoDetHead.kt         # NanoDet distribution head decoder
+│       │   │   ├── Stretch.kt             # NanoDet pre-processing (stretch, BGR, mean/std)
+│       │   │   ├── HeadDecoder.kt / Preprocessor.kt # family-agnostic decode/pre-process
+│       │   │   └── LaneDetector.kt        # Classic-CV lane edges, offset & departure
 │       │   ├── record/                    # Video recording & overlay
 │       │   │   ├── MkvRecorder.kt         # H.264 MediaCodec + Matroska muxer
 │       │   │   ├── Nv21OverlayRenderer.kt # Zero-copy bounding box burn-in

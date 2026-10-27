@@ -66,6 +66,9 @@ class WifiCameraController(
      */
     fun prewarmDetector() = sink.prepare()
 
+    /** Mirrors the MJPEG frames (preview, recording and detections alike). */
+    fun setMirror(mirror: Boolean) = sink.setMirror(mirror)
+
     fun open(url: String) {
         if (isOpen) close()
         sink.prepare()
@@ -207,5 +210,9 @@ class WifiCameraController(
     fun destroy() {
         close()
         sink.destroy()
+    }
+
+    fun reloadDetector() {
+        sink.reloadDetector()
     }
 }

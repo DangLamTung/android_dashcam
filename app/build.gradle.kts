@@ -37,6 +37,15 @@ android {
     namespace = "com.driving.hud.usbcamera"
     compileSdk = 34
 
+    testOptions {
+        unitTests {
+            // The detectors log their one-shot head layout through HudLogger. On the JVM the
+            // android.util.Log stub throws instead of printing, which would hide the decoder
+            // behind an unrelated exception in every test that touches it.
+            isReturnDefaultValues = true
+        }
+    }
+
     // Pin to the NDK that is actually installed (r28c).
     ndkVersion = "28.2.13676358"
 
@@ -55,8 +64,8 @@ android {
         applicationId = "com.driving.hud.usbcamera"
         minSdk = 24
         targetSdk = 34
-        versionCode = 15
-        versionName = "1.0.13"
+        versionCode = 23
+        versionName = "1.0.21"
 
         ndk {
             // libusb is currently built for arm64-v8a only (the target phone ABI).

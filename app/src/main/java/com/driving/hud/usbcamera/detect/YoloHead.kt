@@ -15,7 +15,7 @@ import com.driving.hud.usbcamera.util.HudLogger
 internal class YoloHead(
     private val labels: Array<String>,
     private val labelTag: String
-) {
+) : HeadDecoder {
 
     /** One-shot log of how the detection head was interpreted. */
     private var layoutLogged = false
@@ -33,20 +33,23 @@ internal class YoloHead(
      * @param dimA   leading dim (interpreted as channels or rows depending on layout)
      * @param dimB   trailing dim
      * @param conf   minimum score to keep
-     * @param scale  model-input pixels per source pixel, for undoing the letterbox
+     * @param scaleX model-input pixels per source pixel, for undoing the letterbox
+     * @param scaleY identical to [scaleX] here: YOLO is always fed a letterbox, never stretched
      * @param dx/dy  letterbox padding offset
      */
-    fun decode(
+    override fun decode(
         outer: Array<*>,
         dimA: Int,
         dimB: Int,
         conf: Float,
         srcW: Int,
         srcH: Int,
-        scale: Float,
+        scaleX: Float,
+        scaleY: Float,
         dx: Float,
         dy: Float
     ): List<Detection> {
+        val scale = scaleX
         // YOLOv10 and other NMS-free end-to-end heads emit [1, N, 6] where each row is an
         // already-filtered, already NMS'd detection: x1, y1, x2, y2, score, class_id.
         //

@@ -10,6 +10,8 @@ import android.graphics.Typeface
 import android.util.AttributeSet
 import android.view.View
 import com.driving.hud.usbcamera.detect.Detection
+import com.driving.hud.usbcamera.detect.LanePoint
+import com.driving.hud.usbcamera.detect.LaneResult
 
 class HudOverlayView @JvmOverloads constructor(
     context: Context,
@@ -77,6 +79,9 @@ class HudOverlayView @JvmOverloads constructor(
         gridPaint.strokeWidth = 2f * s
         guidePaint.strokeWidth = 4f * s
         boxPaint.strokeWidth = 5f * s
+        lanePaint.strokeWidth = 6f * s
+        laneWarnPaint.strokeWidth = 6f * s
+        laneTextPaint.textSize = 40f * s
         calibHorizonPaint.strokeWidth = 3f * s
         calibLadderPaint.strokeWidth = 3f * s
         calibReticlePaint.strokeWidth = 2.5f * s
@@ -285,6 +290,53 @@ class HudOverlayView @JvmOverloads constructor(
 
     fun detectionCount(): Int = detections.size
 
+    // ---- lane overlay ----------------------------------------------------
+    @Volatile
+    private var laneResult: LaneResult = LaneResult.NONE
+
+    private val lanePathL = Path()
+    private val lanePathR = Path()
+    private val laneRect = RectF()
+
+    private val lanePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#CC00E676")
+        strokeWidth = 6f
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+        setShadowLayer(6f, 0f, 0f, Color.BLACK)
+    }
+
+    private val laneWarnPaint = Paint(lanePaint).apply {
+        color = Color.parseColor("#EEFF1744")
+    }
+
+    private val laneTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        textSize = 40f
+        typeface = Typeface.MONOSPACE
+        isFakeBoldText = true
+        style = Paint.Style.FILL
+    }
+
+    private val laneTextBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#E6C62828")
+        style = Paint.Style.FILL
+    }
+
+    private val laneTextRect = RectF()
+
+    /** Lane polyline plus departure warning. Called from the lane thread. */
+    fun setLanes(result: LaneResult) {
+        laneResult = result
+        postInvalidateOnAnimation()
+    }
+
+    fun clearLanes() {
+        laneResult = LaneResult.NONE
+        postInvalidateOnAnimation()
+    }
+
     fun toggleGrid(): Boolean {
         showGrid = !showGrid
         invalidate()
@@ -339,7 +391,8 @@ class HudOverlayView @JvmOverloads constructor(
         if (compact && !calibrationMode) {
             // Floating PiP window (~430 px wide): the grid, lane guides and the telemetry box are
             // sized for a full-screen HUD, so at this size they cover the whole picture. Only the
-            // safety-critical drawing is kept - boxes with distances, and the alert banner.
+            // safety-critical drawing is kept - boxes with distances, lanes, and the alert banner.
+            drawLanes(canvas, compact = true)
             drawDetections(canvas)
             drawAlert(canvas, w, h)
             return
@@ -350,6 +403,7 @@ class HudOverlayView @JvmOverloads constructor(
         }
 
         // Detections are independent of the guide grid, so draw them next.
+        drawLanes(canvas, compact = false)
         drawDetections(canvas)
         drawAlert(canvas, w, h)
         if (!calibrationMode) {
@@ -495,6 +549,53 @@ class HudOverlayView @JvmOverloads constructor(
             canvas.drawText(line, left + pad, y, telemetryPaint)
             y += lineH
         }
+    }
+
+    /**
+     * Lane polylines are normalised against the camera frame, exactly like detection boxes, so
+     * they are mapped through [videoRect] and stay glued to the road when the window shape or
+     * the resolution changes.
+     */
+    private fun drawLanes(canvas: Canvas, compact: Boolean) {
+        val r = laneResult
+        if (r.isEmpty) return
+        val rect = videoRect()
+        if (rect.isEmpty) return
+        val paint = if (r.departure) laneWarnPaint else lanePaint
+        if (buildLanePath(lanePathL, r.left, rect)) canvas.drawPath(lanePathL, paint)
+        if (buildLanePath(lanePathR, r.right, rect)) canvas.drawPath(lanePathR, paint)
+        if (!compact && r.departure) drawLaneDeparture(canvas, rect)
+    }
+
+    private fun buildLanePath(path: Path, points: List<LanePoint>, rect: RectF): Boolean {
+        path.reset()
+        if (points.size < 2) return false
+        var first = true
+        for (p in points) {
+            val x = rect.left + p.x * rect.width()
+            val y = rect.top + p.y * rect.height()
+            if (first) {
+                path.moveTo(x, y)
+                first = false
+            } else {
+                path.lineTo(x, y)
+            }
+        }
+        return true
+    }
+
+    private fun drawLaneDeparture(canvas: Canvas, rect: RectF) {
+        val text = "LANE DEPARTURE"
+        val tw = laneTextPaint.measureText(text)
+        val padH = 20f * uiScale
+        val padV = 12f * uiScale
+        val cx = rect.centerX()
+        val maxBottom = height - bottomInset - 16f * uiScale
+        val bottom = minOf(rect.bottom - 16f * uiScale, maxBottom)
+        val top = bottom - laneTextPaint.textSize - padV * 2f
+        laneTextRect.set(cx - tw / 2f - padH, top, cx + tw / 2f + padH, bottom)
+        canvas.drawRoundRect(laneTextRect, 12f * uiScale, 12f * uiScale, laneTextBgPaint)
+        canvas.drawText(text, cx - tw / 2f, bottom - padV - 2f * uiScale, laneTextPaint)
     }
 
     /**

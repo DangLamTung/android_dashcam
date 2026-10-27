@@ -21,7 +21,8 @@ class NcnnDetector private constructor(
     private val inputW: Int,
     private val inputH: Int,
     private val labels: Array<String>,
-    val useVulkan: Boolean
+    val useVulkan: Boolean,
+    private val nanoDet: Boolean = false,
 ) : Detector {
 
     companion object {
@@ -31,6 +32,10 @@ class NcnnDetector private constructor(
         const val BIN_ASSET_320 = "yolov10n_320.ncnn.bin"
         const val PARAM_ASSET_224 = "yolov10n_224.ncnn.param"
         const val BIN_ASSET_224 = "yolov10n_224.ncnn.bin"
+        const val PARAM_ASSET_YOLO26_256 = "yolo26n_256.ncnn.param"
+        const val BIN_ASSET_YOLO26_256 = "yolo26n_256.ncnn.bin"
+        const val PARAM_ASSET_NANODET_320 = "nanodet_320.ncnn.param"
+        const val BIN_ASSET_NANODET_320 = "nanodet_320.ncnn.bin"
 
         // Legacy constants
         const val PARAM_ASSET = PARAM_ASSET_320
@@ -87,7 +92,8 @@ class NcnnDetector private constructor(
             threads: Int = 2,
             fp16: Boolean = true,
             paramAsset: String = if (inputW == 224) PARAM_ASSET_224 else PARAM_ASSET_320,
-            binAsset: String = if (inputW == 224) BIN_ASSET_224 else BIN_ASSET_320
+            binAsset: String = if (inputW == 224) BIN_ASSET_224 else BIN_ASSET_320,
+            nanoDet: Boolean = false,
         ): NcnnDetector? {
             return try {
                 val param = context.assets.open(paramAsset).use { it.readBytes() }
@@ -100,7 +106,7 @@ class NcnnDetector private constructor(
                     HudLogger.w(TAG, "ncnn init refused (vulkan=$vulkan)")
                     null
                 } else {
-                    val det = NcnnDetector(handle, inputW, inputH, labels, vulkan)
+                    val det = NcnnDetector(handle, inputW, inputH, labels, vulkan, nanoDet)
                     // One run now, so the output buffers can be sized before the caller times
                     // anything and so a broken session fails here rather than mid-drive.
                     if (!det.prepare()) {
@@ -126,8 +132,13 @@ class NcnnDetector private constructor(
     private var cols = 0
     private var shapeLogged = false
 
-    private val letterbox = Letterbox(inputW, inputH)
-    private val head = YoloHead(labels, TAG)
+    /**
+     * NanoDet was trained on a stretched, mean/std-normalised BGR input; the YOLO exports on a
+     * letterboxed RGB one. Both the pre-processing and the head therefore follow the family.
+     */
+    private val pre: Preprocessor = if (nanoDet) Stretch(inputW, inputH) else Letterbox(inputW, inputH)
+    private val head: HeadDecoder =
+        if (nanoDet) NanoDetHead(labels, inputW, TAG) else YoloHead(labels, TAG)
 
     /**
      * A warm-up pass that also sizes the output buffers. ncnn's output shape is only knowable
@@ -189,7 +200,7 @@ class NcnnDetector private constructor(
         if (w <= 0 || h <= 0 || nv21.size < w * h * 3 / 2) return emptyList()
         if (outFlat.isEmpty()) return emptyList()
 
-        val chw = letterbox.fill(nv21, w, h)
+        val chw = pre.fill(nv21, w, h)
         val written = try {
             nativeRun(handle, chw, outFlat)
         } catch (t: Throwable) {
@@ -219,9 +230,10 @@ class NcnnDetector private constructor(
             conf,
             w,
             h,
-            letterbox.scale,
-            letterbox.dx,
-            letterbox.dy
+            pre.scaleX,
+            pre.scaleY,
+            pre.dx,
+            pre.dy
         )
     }
 

@@ -44,7 +44,8 @@ class OnnxDetector private constructor(
     private val inputName: String,
     private val inputW: Int,
     private val inputH: Int,
-    private val labels: Array<String>
+    private val labels: Array<String>,
+    private val nanoDet: Boolean = false,
 ) : Detector {
 
     companion object {
@@ -106,34 +107,47 @@ class OnnxDetector private constructor(
         }
 
         /**
-         * Resolve the configured asset, or fall back to whatever `.onnx` file is bundled.
+         * Resolve the configured asset.
          *
-         * A stale preference (e.g. after the packaged model is renamed) should not silently
-         * disable detection when a perfectly usable model is sitting right there.
+         * A **blank** preference may be satisfied by anything bundled — a fresh install should not
+         * start with detection off. A **named** model that is not in the APK is *not* substituted:
+         * the decoder and the pre-processing are chosen from the requested name, so handing a
+         * different family's graph to them produces no boxes at all, with the only clue a warning
+         * in a log the driver never sees. Refusing is the honest answer; Settings then points at a
+         * model that actually ships.
          */
         private fun resolveAsset(context: Context, requested: String): String? {
-            if (assetExists(context, requested)) return requested
+            val exists = assetExists(context, requested)
             val available = try {
                 context.assets.list("")?.filter { it.endsWith(".onnx") }.orEmpty()
             } catch (t: Throwable) {
                 emptyList()
             }
-            // Prefer a real model: test_pattern* is the synthetic plumbing self-test.
-            val ordered = available.sortedWith(compareBy({ it.startsWith("test") }, { it }))
-            if (ordered.isEmpty()) {
-                HudLogger.w(
+            val chosen = chooseAsset(requested, exists, available)
+            when {
+                chosen == null -> HudLogger.w(
                     TAG,
-                    "model asset '$requested' not found and no .onnx bundled — detection disabled"
+                    "model asset '$requested' is not bundled and will not be substituted " +
+                        "(available: $available) — detection stays off for this model"
                 )
-                return null
+                chosen != requested -> HudLogger.i(TAG, "no model preferred; using bundled '$chosen'")
+                else -> Unit
             }
-            val chosen = ordered.first()
-            HudLogger.w(
-                TAG,
-                "model asset '$requested' not found — falling back to '$chosen' " +
-                    "(available: $ordered). Set the name in Settings to silence this."
-            )
             return chosen
+        }
+
+        /**
+         * Which asset to load, given what is bundled. Pure so it is unit tested: the rule that
+         * matters is that a *named* missing model never silently becomes a different one.
+         *
+         * @param exists whether [requested] is present in `assets/`
+         * @param available every bundled `.onnx` name
+         */
+        internal fun chooseAsset(requested: String, exists: Boolean, available: List<String>): String? {
+            if (exists) return requested
+            if (requested.isNotBlank()) return null
+            // Prefer a real model: test_pattern* is the synthetic plumbing self-test.
+            return available.sortedWith(compareBy({ it.startsWith("test") }, { it })).firstOrNull()
         }
 
         /**
@@ -154,7 +168,8 @@ class OnnxDetector private constructor(
             requestedAsset: String,
             frameW: Int,
             frameH: Int,
-            onlyProvider: String? = null
+            onlyProvider: String? = null,
+            nanoDet: Boolean = false,
         ): OnnxDetector? {
             return try {
                 val assetName = resolveAsset(context, requestedAsset) ?: return null
@@ -191,7 +206,7 @@ class OnnxDetector private constructor(
                             configure(this)
                         }
                         val session = env.createSession(bytes, opts)
-                        val det = buildDetector(env, session)
+                        val det = buildDetector(env, session, nanoDet)
                         created = det
                         // One untimed pass to warm caches, then time two more. The confidence
                         // threshold is irrelevant here — this measures the full pass cost.
@@ -256,7 +271,11 @@ class OnnxDetector private constructor(
         }
 
         /** Wraps a session in a detector, reading the input size from the graph. */
-        private fun buildDetector(env: OrtEnvironment, session: OrtSession): OnnxDetector {
+        private fun buildDetector(
+            env: OrtEnvironment,
+            session: OrtSession,
+            nanoDet: Boolean
+        ): OnnxDetector {
             val inputName = session.inputNames.first()
             val shape = (session.inputInfo[inputName]?.info as? TensorInfo)?.shape
                 ?: longArrayOf(1, 3, 640, 640)
@@ -272,9 +291,12 @@ class OnnxDetector private constructor(
                     if (c in 5..200) outputChannels = c
                 }
             }
-            val labels = when (outputChannels) {
-                4 + AUTOMOTIVE_LABELS.size -> AUTOMOTIVE_LABELS
-                4 + COCO_LABELS.size -> COCO_LABELS
+            // NanoDet's head is 4*(reg_max+1)+classes wide, so the channel count says nothing
+            // about the label set; it is always COCO in the bundled export.
+            val labels = when {
+                nanoDet -> COCO_LABELS
+                outputChannels == 4 + AUTOMOTIVE_LABELS.size -> AUTOMOTIVE_LABELS
+                outputChannels == 4 + COCO_LABELS.size -> COCO_LABELS
                 else -> {
                     // A head this wide belongs to no label set we know. Decoding it would index
                     // the class list out of range, so the mismatch is reported rather than
@@ -289,7 +311,7 @@ class OnnxDetector private constructor(
                 }
             }
             HudLogger.i(TAG, "model has $outputChannels channels -> using ${labels.size} labels")
-            return OnnxDetector(env, session, inputName, w, h, labels)
+            return OnnxDetector(env, session, inputName, w, h, labels, nanoDet)
         }
 
         /** CPU cost of a candidate, shared with the cross-backend shoot-out. */
@@ -355,11 +377,12 @@ class OnnxDetector private constructor(
 
     // ----------------------------------------------------------- inference
 
-    /** NV21 -> letterboxed CHW preprocessing, shared with every other backend. */
-    private val letterbox = Letterbox(inputW, inputH)
+    /** NV21 -> CHW preprocessing, shared with every other backend. */
+    private val pre: Preprocessor = if (nanoDet) Stretch(inputW, inputH) else Letterbox(inputW, inputH)
 
     /** Head decoding + NMS, shared with every other backend. */
-    private val head = YoloHead(labels, TAG)
+    private val head: HeadDecoder =
+        if (nanoDet) NanoDetHead(labels, inputW, TAG) else YoloHead(labels, TAG)
 
     /** Reused direct buffer handed straight to ORT (no per-frame allocation). */
     private val inputShape = longArrayOf(1, 3, inputH.toLong(), inputW.toLong())
@@ -378,7 +401,7 @@ class OnnxDetector private constructor(
     override fun detect(nv21: ByteArray, w: Int, h: Int, conf: Float): List<Detection> {
         if (w <= 0 || h <= 0 || nv21.size < w * h * 3 / 2) return emptyList()
 
-        val chw = letterbox.fill(nv21, w, h)
+        val chw = pre.fill(nv21, w, h)
 
         return try {
             inputBuffer.clear()
@@ -395,9 +418,10 @@ class OnnxDetector private constructor(
                         conf,
                         w,
                         h,
-                        letterbox.scale,
-                        letterbox.dx,
-                        letterbox.dy
+                        pre.scaleX,
+                        pre.scaleY,
+                        pre.dx,
+                        pre.dy
                     )
                 }
             }

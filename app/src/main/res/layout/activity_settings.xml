@@ -46,6 +46,14 @@
             android:textColor="@color/hud_text_primary" />
 
         <Switch
+            android:id="@+id/swHudFlip"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/settings_hud_flip"
+            android:textColor="@color/hud_text_primary" />
+
+        <Switch
             android:id="@+id/swRecordOverlay"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -277,6 +285,13 @@
             android:textColor="@color/hud_text_primary" />
 
         <Switch
+            android:id="@+id/swLanes"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/settings_lanes"
+            android:textColor="@color/hud_text_primary" />
+
+        <Switch
             android:id="@+id/swShowBattery"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -354,12 +369,63 @@
             android:textSize="11sp" />
 
 
+        <!-- Detection model: one tap instead of typing an asset name. -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="@string/settings_model"
+            android:textColor="@color/hud_text_primary" />
+
+        <RadioGroup
+            android:id="@+id/rgModel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <RadioButton
+                android:id="@+id/rbModelV10n224"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_model_v10n_224"
+                android:textColor="@color/hud_text_primary" />
+
+            <RadioButton
+                android:id="@+id/rbModelV10n320"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_model_v10n_320"
+                android:textColor="@color/hud_text_primary" />
+
+            <RadioButton
+                android:id="@+id/rbModelYolo26n256"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_model_yolo26n_256"
+                android:textColor="@color/hud_text_primary" />
+
+            <RadioButton
+                android:id="@+id/rbModelNanoDet320"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_model_nanodet_320"
+                android:textColor="@color/hud_text_primary" />
+        </RadioGroup>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/settings_model_bundled_hint"
+            android:textColor="@color/hud_text_secondary"
+            android:textSize="11sp" />
+
         <EditText
             android:id="@+id/etModel"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:hint="@string/settings_model_hint"
+            android:layout_marginTop="8dp"
+            android:hint="@string/settings_model_custom_hint"
             android:importantForAutofill="no"
             android:textColor="@color/hud_text_primary"
             android:textColorHint="@color/hud_text_secondary"

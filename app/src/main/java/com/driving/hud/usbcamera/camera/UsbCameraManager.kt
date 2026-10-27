@@ -199,10 +199,14 @@ class UsbCameraManager(
         mjpegDecoder?.attachSurface(surface)
     }
 
-    /** Passes the windshield-mirror flag to the decoder (software path honors it). */
+    /**
+     * The HUD mirrors the picture by scaling [HudSurfaceView][com.driving.hud.usbcamera.ui.HudSurfaceView],
+     * which keeps the detection overlay aligned with it. Flipping the software decoder as well
+     * cancelled that out (two display-only flips are the same as none), and it was also lost when
+     * the decoder was created after the toggle, so the decoder is deliberately left alone.
+     */
     fun setMirror(mirror: Boolean) {
-        HudLogger.i(TAG, "setMirror: $mirror")
-        mjpegDecoder?.setMirror(mirror)
+        HudLogger.i(TAG, "setMirror: $mirror (applied by the HUD SurfaceView)")
     }
 
     fun scanAndConnect(forcePermission: Boolean = false) {
