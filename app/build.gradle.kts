@@ -56,6 +56,9 @@ android {
                 storePassword = keystoreProperties.getProperty("storePassword")
                 keyAlias = keystoreProperties.getProperty("keyAlias")
                 keyPassword = keystoreProperties.getProperty("keyPassword")
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
             }
         }
     }
@@ -64,8 +67,8 @@ android {
         applicationId = "com.driving.hud.usbcamera"
         minSdk = 24
         targetSdk = 34
-        versionCode = 23
-        versionName = "1.0.21"
+        versionCode = 24
+        versionName = "1.0.22"
 
         ndk {
             // libusb is currently built for arm64-v8a only (the target phone ABI).
@@ -81,6 +84,9 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Keeps default debug.keystore so it matches existing development installations.
+        }
         release {
             // Unsigned release builds are not installable, so the release build type must
             // always name a key. See the signing block at the top of this file.

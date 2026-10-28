@@ -176,6 +176,11 @@ fi
 # preview SurfaceView into existence. Without the HUD there is no surface to render to.
 A logcat -c 2>/dev/null
 A shell am start -n "$ACT" --ez "$EXTRA_KEY" true >/dev/null
+if [ "$SOURCE" = usb ]; then
+    # The USB permission dialog is a system dialog: nothing can pre-grant it, so the run is only
+    # meaningful once someone taps Allow. Say so before the sleep, not after.
+    echo "== TAP Allow on the USB access dialog now, then let it stream"
+fi
 echo "== streaming for ${SECS}s"
 sleep "$SECS"
 
@@ -184,8 +189,17 @@ A exec-out screencap -p > "$SHOT" 2>/dev/null
 [ -s "$SHOT" ] && echo "== screenshot: $SHOT"
 
 LOG="$OUT/logcat.txt"
-A logcat -d -v time -s SystemCameraCtrl:V MainActivity:V HudSurfaceView:V UVCCameraEngine:V DvrCameraCtrl:V DvrBot:V DvrVolume:V DvrUsbProbe:V > "$LOG" 2>/dev/null
+A logcat -d -v time -s SystemCameraCtrl:V MainActivity:V HudSurfaceView:V UVCCameraEngine:V UsbCameraManager:V CameraCoordinator:V DvrCameraCtrl:V DvrBot:V DvrVolume:V DvrUsbProbe:V CrashReporter:V AndroidRuntime:E > "$LOG" 2>/dev/null
 echo "== logcat: $LOG ($(wc -l < "$LOG" | tr -d ' ') lines)"
+
+# A crash takes the process down before any of the tags above can explain it, and it lands in
+# the crash buffer rather than main, so it needs its own capture.
+CRASH="$OUT/crash.txt"
+A logcat -d -v time -b crash > "$CRASH" 2>/dev/null
+if [ -s "$CRASH" ] && grep -q "$PKG" "$CRASH"; then
+    echo "== CRASH DUMP: $CRASH"
+    grep -A30 "FATAL EXCEPTION" "$CRASH" | head -40
+fi
 
 # Best effort: the on-device log file (often not readable on Android 11+).
 A pull /sdcard/Android/data/$PKG/files/logs/hud.log "$OUT/hud.log" >/dev/null 2>&1 && echo "== also pulled hud.log"
@@ -195,7 +209,7 @@ A shell am force-stop "$PKG" >/dev/null
 # ---------------------------------------------------------------- evidence
 echo
 echo "======================= CAMERA SOURCE EVIDENCE ======================="
-grep -E "camera output sizes|Selected system camera resolution|preview buffer fixed|System camera opened|detection disabled|capture session (started|rejected)|retrying with|Failed to start capture request|Camera cannot be configured|Failed to open camera|Surface (created|changed|destroyed)|video fit|Scanning USB devices|UVC device found|no UVC video interface|permission granted|openDevice returned null|openCamera|preview size ->|preview committed|advertised:|frame callback|stats: fps|libusb|DvrCameraCtrl|U2 DVR|stream slot|delivered [0-9]+ frames" "$LOG" | sed 's/^[0-9-]* [0-9:.]* *[0-9]* *[0-9]* [A-Z] //' | sort -u
+grep -E "camera output sizes|Selected system camera resolution|preview buffer fixed|System camera opened|detection disabled|capture session (started|rejected)|retrying with|Failed to start capture request|Camera cannot be configured|Failed to open camera|Surface (created|changed|destroyed)|video fit|Scanning USB devices|UVC device found|no UVC video interface|permission granted|USB permission result received|USB Permission (granted|denied)|Requesting USB permission|USB Device (attached|detached)|openDevice returned null|openCamera|preview size ->|preview committed|advertised:|frame callback|stats: fps|libusb|DvrCameraCtrl|U2 DVR|stream slot|delivered [0-9]+ frames" "$LOG" | sed 's/^[0-9-]* [0-9:.]* *[0-9]* *[0-9]* [A-Z] //' | sort -u
 
 echo
 echo "------------------------------- VERDICT ------------------------------"
@@ -213,6 +227,17 @@ elif grep -q "U2 DVR: grant USB access to start" "$LOG"; then
     echo "VERDICT  : U2 DVR NEEDS USB PERMISSION - tap Allow on the tablet, then re-run."
 elif grep -q "U2 DVR not connected" "$LOG"; then
     echo "VERDICT  : U2 DVR NOT ATTACHED (VID 0x1902 / PID 0x3241)."
+elif grep -q "USB Permission denied" "$LOG"; then
+    echo "VERDICT  : USB PERMISSION DENIED - the system dialog was refused, so no UVC session can"
+    echo "           start. Re-run and tap Allow."
+elif grep -q "Requesting USB permission" "$LOG" \
+    && ! grep -Eq "USB permission result received|USB Permission granted|permission already granted" "$LOG"; then
+    echo "VERDICT  : USB PERMISSION PENDING - the system dialog was never answered. Tap Allow and"
+    echo "           re-run with a larger --secs so the stream is sampled after the grant."
+elif grep -q "UVC device found" "$LOG"; then
+    echo "ATTACHED : $(grep -m1 'UVC device found' "$LOG" | sed 's/.*UVC device found: //')"
+    echo "VERDICT  : UVC CAMERA CLAIMED - the USB webcam exposed a video interface and the app"
+    echo "           opened it. Whether frames arrive is the FRAMES line below."
 elif grep -q "Scanning USB devices. Count: 0" "$LOG"; then
     echo "VERDICT  : NO USB DEVICE ATTACHED (nothing enumerated, or it dropped off mid-run)."
 elif grep -q "no UVC video interface on any attached device" "$LOG"; then
